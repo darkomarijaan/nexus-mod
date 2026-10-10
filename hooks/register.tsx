@@ -1536,11 +1536,17 @@ async function routerCall(
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   const link = await read($, routerLink)
   if (link === null) return { ok: false, status: 0, data: {} }
-  const response = await $.http.fetch(`${link.url}${path}`, {
-    method,
-    headers: { 'x-nexus-control': link.token, 'content-type': 'application/json' },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
+  let response
+  try {
+    response = await $.http.fetch(`${link.url}${path}`, {
+      method,
+      headers: { 'x-nexus-control': link.token, 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })
+  } catch {
+    // an unreachable router: callers turn status 0 into their own plain sentence
+    return { ok: false, status: 0, data: {} }
+  }
   let data: Record<string, unknown> = {}
   try {
     data = JSON.parse(response.text) as Record<string, unknown>
@@ -1577,6 +1583,9 @@ async function saveProfiles($: Engine, list: ProviderProfile[]): Promise<void> {
 
 const NOT_LINKED =
   'This session does not run behind the Nexus router. Start Claude Code with claude-nexus (bin/claude-nexus.cmd in the Nexus folder) to switch providers; plain claude keeps Remote Control.'
+
+/** After a hub compaction, success or not, the next waits this long. */
+const HUB_COMPACT_COOLDOWN_MS = 60_000
 
 const COMPACT_THEN_SWITCH = 'Compact, then switch'
 const SWITCH_ANYWAY = 'Switch anyway'
@@ -1869,8 +1878,9 @@ export const register: Register = (on, options) => {
   // The handoff the previous session left, read once at start (this session overwrites it as it works).
   let previousHandoff: Handoff | null = null
   let lastContextPct = 0
-  // A hub compaction under way, so one window crossing starts only one.
+  // A hub compaction under way, and when the last one ended: one at a time, and not again within a minute.
   let compactingForHub = false
+  let hubCompactedAt = Number.NEGATIVE_INFINITY
   // A quota window crossed while idle: asked about before the next prompt goes.
   let quotaPending: string | null = null
   // The note a compaction leaves for Claude, until it is delivered.
@@ -2177,13 +2187,20 @@ export const register: Register = (on, options) => {
       }))
       // On a hub, compact before the profile's own window fills.
       const view = await read($, provider)
-      if (view.route !== 'claude' && !compactingForHub) {
+      if (view.route !== 'claude' && !compactingForHub && at - hubCompactedAt >= HUB_COMPACT_COOLDOWN_MS) {
         const profile = view.profiles.find(one => one.name === view.route)
         if (profile !== undefined && needsCompaction(context.tokens ?? null, profile.contextWindow, 0.85)) {
           compactingForHub = true
           void $.session
             .compact({ instructions: 'Keep file paths, open tasks, check results and decisions.' })
             .catch(() => undefined)
+            .then(() => $.clock.now())
+            .then(ended => {
+              hubCompactedAt = ended
+            })
+            .catch(() => {
+              hubCompactedAt = at
+            })
             .finally(() => {
               compactingForHub = false
             })
