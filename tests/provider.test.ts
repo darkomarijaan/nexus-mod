@@ -363,6 +363,44 @@ describe('provider in a plain claude session', () => {
   })
 })
 
+describe('editing the profile in use', () => {
+  async function edit($: Parameters<NonNullable<Parameters<typeof test>[2]>>[0], on: On, useFirst: boolean) {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls, written, clock } = routerEnv(on)
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    await $.session.start?.(START as never)
+    await clock.settle()
+    if (useFirst) await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'edit-myhub' })
+    await ui.input({ key: 'name', text: 'myhub' })
+    await ui.input({ key: 'hubUrl', text: 'https://new.example/v1' })
+    await ui.input({ key: 'apiKey', text: 'sk-brand-new-key-123' })
+    await ui.input({ key: 'opus', text: 'new-model' })
+    await ui.input({ key: 'sonnet', text: '' })
+    await ui.input({ key: 'haiku', text: '' })
+    await ui.input({ key: 'contextWindow', text: '500000' })
+    await ui.select({ key: 'fallback', value: 'yes' })
+    await ui.unmount()
+
+    return { calls, written }
+  }
+
+  test('saving an edit of the active profile sends the new values to the router', { options: BASE_OPTIONS }, async ($, on) => {
+    const { calls, written } = await edit($ as never, on, true)
+    const posts = calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => one.body as { route: string; profile: Record<string, unknown> })
+    expect(posts.map(one => one.route)).toEqual(['myhub', 'myhub'])
+    expect(posts.at(-1)?.profile).toEqual({ hubUrl: 'https://new.example/v1', apiKey: 'sk-brand-new-key-123', models: { opus: 'new-model' }, contextWindow: 500_000 })
+    expect(written.all()).not.toContain('sk-brand-new-key-123')
+  })
+
+  test('editing a profile that is not in use leaves the router alone', { options: BASE_OPTIONS }, async ($, on) => {
+    const { calls } = await edit($ as never, on, false)
+    expect(calls.some(one => one.url.endsWith('/__nexus/route'))).toBe(false)
+  })
+})
+
 describe('profile draft', () => {
   test('steps run in order and end after fallback', () => {
     expect(DRAFT_STEPS[0]).toBe('name')
@@ -725,6 +763,23 @@ describe('fallback when Claude quota runs out', () => {
     expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'release' })
     expect(asked).toBe(false)
   })
+
+  test('ask: a hub whose window is smaller than the context says so on its choice', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
+    mock.store(on, { providers: [{ ...MYHUB, contextWindow: 100_000 }, { ...MYHUB, name: 'omni', contextWindow: 1_000_000, isDefault: false }] })
+    const { calls, clock } = limitRouter(on)
+    const labels: string[] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      labels.push(...(e.questions[0]?.options ?? []).map(one => one.label))
+      return { result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: 'Continue on omni' } } }
+    })
+    on('session.measure', (_, e) => ({ changed: e.changed }))
+    await $.session.start?.(START as never)
+    await $.session.measure({ context: { tokens: 150_000, window: 1_000_000, percent: 15 }, rateLimits: [], changed: ['context'] } as never)
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    await untilDecision(calls, clock)
+    expect(labels).toEqual(['Continue on myhub — context 150000 tokens exceeds its window; this turn will likely fail', 'Continue on omni', "Don't switch"])
+    expect((calls.find(one => one.url.endsWith('/__nexus/route'))?.body as { route?: string } | undefined)?.route).toBe('omni')
+  })
 })
 
 describe('back to Claude and the quota guard', () => {
@@ -779,6 +834,40 @@ describe('back to Claude and the quota guard', () => {
     expect(choices).toEqual([['Keep going', 'Switch to myhub now', 'Stop this turn']])
     expect(calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => (one.body as { route: string }).route)).toEqual(['myhub'])
   })
+
+  test('the quota guard switch also earns the offer to go back, from the crossed window reset', { options: { ...BASE_OPTIONS, quotaGuard: 90 } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls, clock } = routerEnv(on)
+    const offers: string[] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      const question = e.questions[0]?.question ?? ''
+      offers.push(question)
+      const answer = question.includes('QUOTA') ? 'Switch to myhub now' : 'Back to Claude'
+      return { result: { questions: e.questions, answers: { [question]: answer } } }
+    })
+    on('session.measure', (_, e) => ({ changed: e.changed }))
+    on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
+    on('turn.complete', (_, e) => ({ text: e.answer }))
+    const end = { answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' } as never
+    await $.session.start?.(START as never)
+    await clock.settle()
+    await $.turn.start({ turnId: 't1' } as never)
+    await $.session.measure({
+      context: { tokens: 1000, window: 1_000_000, percent: 1 },
+      rateLimits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: new Date(3_600_000).toISOString() }],
+      changed: ['rateLimits'],
+    } as never)
+    await clock.settle()
+    offers.length = 0
+    await $.turn.complete(end)
+    await clock.settle()
+    expect(offers).toEqual([])
+    await clock.advance(3_600_000)
+    await $.turn.complete(end)
+    await clock.settle()
+    expect(offers).toEqual(["Claude's quota has reset. Go back to Claude?"])
+    expect(calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => (one.body as { route: string }).route)).toEqual(['myhub', 'claude'])
+  })
 })
 
 describe('the router watcher and held requests', () => {
@@ -811,6 +900,22 @@ describe('the router watcher and held requests', () => {
     expect(decisions(calls)).toEqual([{ id: 'h1', action: 'retry' }])
     // The route POST came before the decision.
     expect(calls.findIndex(one => one.url.endsWith('/__nexus/route'))).toBeLessThan(calls.findIndex(one => one.url.endsWith('/__nexus/decision')))
+  })
+
+  test('a route event keeps the badge true, whoever changed the route', { options: { ...BASE_OPTIONS, fallbackMode: 'off' } }, async ($, on) => {
+    mock.store(on)
+    const events: unknown[][] = []
+    const { clock, written } = routerEnv(on, events)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    events.push([{ type: 'route', route: 'myhub', model: 'antigravity/gemini-3.8-flash-tiered' }])
+    await clock.advance(2000)
+    await clock.settle()
+    expect(written.of('provider').at(-1)?.value).toMatchObject({ route: 'myhub', model: 'antigravity/gemini-3.8-flash-tiered' })
+    events.push([{ type: 'route', route: 'claude' }])
+    await clock.advance(4000)
+    await clock.settle()
+    expect(written.of('provider').at(-1)?.value).toMatchObject({ route: 'claude', model: null })
   })
 
   test('a start after a reload takes over: only the newest loop polls and decides', { options: { ...BASE_OPTIONS, fallbackMode: 'off' } }, async ($, on) => {

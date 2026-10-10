@@ -1491,8 +1491,8 @@ const QUOTA_STOP = 'Stop this turn'
 const QUOTA_SEND = 'Send it'
 const QUOTA_HOLD = 'Hold it'
 
-/** The windows that just passed the guard, said plainly; null when none did. Each window is raised once per reset, across sessions. */
-async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window[]): Promise<string | null> {
+/** The windows that just passed the guard, said plainly, and when the last of them resets (null if unknown); null when none did. Each window is raised once per reset, across sessions. */
+async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window[]): Promise<{ text: string; resetsAt: number | null } | null> {
   const stored = await $.store.get('quotaRaised').catch(() => null)
   const raised = new Set(Array.isArray(stored) ? stored.filter((one): one is string => typeof one === 'string') : [])
   const crossed = crossedWindows(limits, cfg.quotaGuard, raised)
@@ -1501,13 +1501,20 @@ async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window
   await $.store.set('quotaRaised', [...raised].slice(-12)).catch(() => undefined)
   const now = await $.clock.now()
 
-  return crossed
-    .map(one => `the ${WINDOW_NAMES[one.kind]} limit is at ${Math.round(one.percentUsed)}%${one.resetsAt === null ? '' : ` (resets in ${untilReset(one.resetsAt, now)})`}`)
-    .join(' and ')
+  const resets = crossed.map(one => one.resetsAt)
+  // Claude is back once every crossed window has reset.
+  const resetsAt = resets.some(one => one === null) ? null : Math.max(...(resets as number[]))
+
+  return {
+    text: crossed
+      .map(one => `the ${WINDOW_NAMES[one.kind]} limit is at ${Math.round(one.percentUsed)}%${one.resetsAt === null ? '' : ` (resets in ${untilReset(one.resetsAt, now)})`}`)
+      .join(' and '),
+    resetsAt,
+  }
 }
 
 /** Mid-turn, asks whether the turn goes on; an answer of stop ends it. */
-async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo?: string): Promise<void> {
+async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo?: string, resetsAt: number | null = null): Promise<void> {
   await setWaiting($, true)
   try {
     const options = switchTo === undefined ? [QUOTA_KEEP, QUOTA_STOP] : [QUOTA_KEEP, `Switch to ${switchTo} now`, QUOTA_STOP]
@@ -1517,6 +1524,8 @@ async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo
       $.ui.toast('Turn stopped to save quota.')
     } else if (switchTo !== undefined && answer === `Switch to ${switchTo} now`) {
       $.ui.toast(await useRoute($, switchTo, { askCompact: false }))
+      // Claude comes back when the crossed window resets: the turn's end offers the way back then.
+      if (resetsAt !== null && (await read($, provider)).route === switchTo) await update($, claudeBackAt, () => resetsAt)
     }
   } catch {
     // nobody to ask: the turn goes on
@@ -1621,6 +1630,13 @@ const COMPACT_THEN_SWITCH = 'Compact, then switch'
 const SWITCH_ANYWAY = 'Switch anyway'
 const CANCEL = 'Cancel'
 
+/** Hands a profile, key included, to the router as the route. */
+const postRoute = ($: Engine, profile: ProviderProfile) =>
+  routerCall($, 'POST', '/__nexus/route', {
+    route: profile.name,
+    profile: { hubUrl: profile.hubUrl, apiKey: profile.apiKey, models: profile.models, contextWindow: profile.contextWindow },
+  })
+
 /** Points the router at Claude or a profile; the text says what happened. */
 async function useRoute($: Engine, name: string, options: { askCompact?: boolean } = {}): Promise<string> {
   if ((await ensureRouterLink($)) === null) return NOT_LINKED
@@ -1646,10 +1662,7 @@ async function useRoute($: Engine, name: string, options: { askCompact?: boolean
     if (choice === CANCEL) return 'Not switched.'
     if (choice === COMPACT_THEN_SWITCH) await $.session.compact({ instructions: 'Keep file paths, open tasks and decisions.' }).catch(() => undefined)
   }
-  const answer = await routerCall($, 'POST', '/__nexus/route', {
-    route: profile.name,
-    profile: { hubUrl: profile.hubUrl, apiKey: profile.apiKey, models: profile.models, contextWindow: profile.contextWindow },
-  })
+  const answer = await postRoute($, profile)
   if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
   const model = primaryModel(profile.models) ?? null
   await update($, provider, now => ({ ...now, route: profile.name, model }))
@@ -1690,6 +1703,7 @@ async function limitAction($: Engine, cfg: NexusConfig, event: Record<string, un
   if ((await read($, provider)).route !== 'claude') return 'retry'
   const choices = fallbackChoices(await loadProfiles($))
   if (cfg.fallbackMode === 'off' || choices.length === 0) return 'release'
+  const tokens = (await read($, hud)).tokens
   const now = await $.clock.now()
   const window = event.window === 'seven_day' ? 'weekly' : event.window === 'five_hour' ? '5-hour' : 'plan'
   const when = typeof event.resetsAt === 'number' ? ` (resets in ${untilReset(event.resetsAt, now)})` : ''
@@ -1699,11 +1713,16 @@ async function limitAction($: Engine, cfg: NexusConfig, event: Record<string, un
   } else {
     await setWaiting($, true)
     try {
+      // A hub whose window is smaller than the context would fail the retried request; say so on its choice.
+      const labelled = choices.slice(0, 3).map(one => ({
+        name: one.name,
+        label: `${continueOn(one.name)}${tokens !== null && tokens > one.contextWindow ? ` — context ${tokens} tokens exceeds its window; this turn will likely fail` : ''}`,
+      }))
       const answer = await $.ui.ask(`Claude's ${window} limit is reached${when}. Continue this turn on a hub?`, {
         header: 'Provider',
-        options: [...choices.slice(0, 3).map(one => continueOn(one.name)), DONT_SWITCH],
+        options: [...labelled.map(one => one.label), DONT_SWITCH],
       })
-      target = choices.find(one => continueOn(one.name) === answer)?.name
+      target = labelled.find(one => one.label === answer)?.name
     } catch {
       target = undefined
     } finally {
@@ -1721,6 +1740,13 @@ async function limitAction($: Engine, cfg: NexusConfig, event: Record<string, un
 async function handleRouterEvent($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<void> {
   if (event.type === 'upstream-error') {
     $.ui.toast(`The hub ${String(event.route)} answered ${String(event.status)}. /provider-nexus use claude goes back to Claude.`, { timeoutMs: 8000 })
+    return
+  }
+  if (event.type === 'route' && typeof event.route === 'string') {
+    // Whoever changed the route, the badge says where requests really go.
+    const route = event.route
+    const model = route === 'claude' || typeof event.model !== 'string' ? null : event.model
+    await update($, provider, now => ({ ...now, route, model }))
     return
   }
   if (event.type !== 'limit' || typeof event.id !== 'string') return
@@ -1851,6 +1877,11 @@ async function submitDraftField($: Engine, value: string): Promise<void> {
   const list = [...others.map(one => (saved.isDefault ? { ...one, isDefault: false } : one)), saved]
   await saveProfiles($, list)
   await closeDraft($)
+  // The profile in use was edited: the router still holds the old key, models and URL.
+  if (draft.editing !== null && saved.name === (await read($, provider)).route && (await read($, routerLink)) !== null) {
+    const pushed = await postRoute($, saved)
+    if (!pushed.ok) $.ui.toast(`Saved ${saved.name}, but the router did not take the change: /provider-nexus use ${saved.name} sends it again.`, { timeoutMs: 8000 })
+  }
   $.ui.toast(`Saved ${saved.name} (key ${maskKey(saved.apiKey)}).`)
 }
 
@@ -2462,13 +2493,14 @@ export const register: Register = (on, options) => {
       // Quota guard: once per window, ask mid-turn; idle, ask before the next prompt
       if (cfg.quotaGuard > 0 && e.changed.includes('rateLimits')) {
         void (async () => {
-          const what = await crossedQuota($, cfg, limits)
-          if (what === null) return
+          const crossed = await crossedQuota($, cfg, limits)
+          if (crossed === null) return
+          const what = crossed.text
           const current = await read($, turn)
           if (current.isWorking && current.id !== null) {
             const onClaude = (await read($, routerLink)) !== null && (await read($, provider)).route === 'claude'
             const choice = onClaude ? fallbackChoices(await loadProfiles($))[0]?.name : undefined
-            await askQuotaMidTurn($, what, current.id, choice)
+            await askQuotaMidTurn($, what, current.id, choice, crossed.resetsAt)
           } else {
             quotaPending = what
             $.ui.toast(`Quota: ${what}.`, { timeoutMs: 10_000 })
