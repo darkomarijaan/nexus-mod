@@ -36,14 +36,20 @@ import {
   windowKey,
 } from './lean'
 import {
+  type DraftStep,
+  DRAFT_STEPS,
+  draftToProfile,
   hubBadge,
   maskKey,
   needsCompaction,
+  nextStep,
+  normalizeHubUrl,
   parseProviderArgs,
   primaryModel,
   readProfiles,
   routerLinkFrom,
   type ProviderProfile,
+  validateProfile,
 } from './provider'
 import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
@@ -1641,6 +1647,102 @@ async function providerStatus($: Engine): Promise<string> {
   ].join('\n')
 }
 
+const STEP_LABEL: Record<DraftStep, string> = {
+  name: 'Name (lowercase, e.g. myhub)',
+  hubUrl: 'Hub URL (e.g. https://hub.example.com/v1)',
+  apiKey: 'API key (shown while you type; masked once saved)',
+  opus: 'Model for opus requests',
+  sonnet: 'Model for sonnet requests (empty: same as the first one filled)',
+  haiku: 'Model for haiku requests (empty: same as the first one filled)',
+  contextWindow: 'Context window in tokens (empty: 200000)',
+  fallback: 'Offer this profile when Claude quota runs out?',
+}
+
+async function fetchHubModels($: Engine, hubUrl: string, apiKey: string): Promise<string[]> {
+  try {
+    const response = await $.http.fetch(`${normalizeHubUrl(hubUrl)}/models`, {
+      headers: { 'x-api-key': apiKey, authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return []
+    const parsed = JSON.parse(response.text) as { data?: { id?: string }[] }
+
+    return (parsed.data ?? []).map(one => one.id).filter((id): id is string => typeof id === 'string').slice(0, 60)
+  } catch {
+    return []
+  }
+}
+
+async function startDraft($: Engine, editing: string | null): Promise<void> {
+  const profile = editing === null ? undefined : (await loadProfiles($)).find(one => one.name === editing)
+  const values: Record<string, string> =
+    profile === undefined
+      ? {}
+      : {
+          name: profile.name,
+          hubUrl: profile.hubUrl,
+          apiKey: profile.apiKey,
+          opus: profile.models.opus ?? '',
+          sonnet: profile.models.sonnet ?? '',
+          haiku: profile.models.haiku ?? '',
+          contextWindow: String(profile.contextWindow),
+          fallback: profile.isDefault ? 'yes-default' : profile.fallback ? 'yes' : 'no',
+        }
+  await update($, provider, now => ({ ...now, draft: { step: 'name' as const, editing, values, models: [], error: null } }))
+}
+
+async function submitDraftField($: Engine, value: string): Promise<void> {
+  const view = await read($, provider)
+  const draft = view.draft
+  if (draft === null) return
+  const values = { ...draft.values, [draft.step]: value.trim() }
+  let models = draft.models
+  if (draft.step === 'apiKey') models = await fetchHubModels($, values.hubUrl ?? '', values.apiKey ?? '')
+  const step = nextStep(draft.step)
+  if (step !== null) {
+    await update($, provider, now => ({ ...now, draft: { ...draft, step, values, models, error: null } }))
+    return
+  }
+  const all = await loadProfiles($)
+  const others = all.filter(one => one.name !== draft.editing)
+  const result = validateProfile(draftToProfile(values), others)
+  if (result.profile === null) {
+    const [field, message] = Object.entries(result.errors)[0] ?? ['name', 'check the fields']
+    const back = (field === 'models' ? 'opus' : field) as DraftStep
+    await update($, provider, now => ({ ...now, draft: { ...draft, step: back, values, models, error: message } }))
+    return
+  }
+  const saved = result.profile
+  const list = [...others.map(one => (saved.isDefault ? { ...one, isDefault: false } : one)), saved]
+  await saveProfiles($, list)
+  await update($, provider, now => ({ ...now, draft: null }))
+  $.ui.toast(`Saved ${saved.name} (key ${maskKey(saved.apiKey)}).`)
+}
+
+async function testProfile($: Engine, name: string): Promise<string> {
+  const profile = (await loadProfiles($)).find(one => one.name === name)
+  if (profile === undefined) return `No profile named ${name}.`
+  const models = [...new Set(Object.values(profile.models).filter((one): one is string => typeof one === 'string' && one !== ''))]
+  const lines: string[] = []
+  for (const model of models) {
+    const started = await $.clock.now()
+    try {
+      const response = await $.http.fetch(`${profile.hubUrl}/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': profile.apiKey, authorization: `Bearer ${profile.apiKey}` },
+        body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply with: ok' }] }),
+      })
+      const took = (await $.clock.now()) - started
+      lines.push(response.ok ? `✓ ${model}  ${took} ms` : `✗ ${model}  HTTP ${response.status}: ${clip(maskSecrets(response.text).text.split(profile.apiKey).join(maskKey(profile.apiKey)), 160)}`)
+    } catch (error) {
+      lines.push(`✗ ${model}  ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  const text = lines.join('\n')
+  await update($, provider, now => ({ ...now, tests: { ...now.tests, [name]: text } }))
+
+  return `${profile.name} (${profile.hubUrl}):\n${text}`
+}
+
 // ═══ 4. Delivery ═════════════════════════════════════════════════════════
 
 function deliveryRules(cfg: NexusConfig): string {
@@ -1789,7 +1891,7 @@ const COMMANDS = [
   { name: 'skin-nexus', description: 'Nexus: change the skin (theme) of the HUD and drawers', argumentHint: '[name | list | reset]', immediate: true },
   { name: 'enhance-nexus', description: 'Nexus: rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box', argumentHint: '<rough prompt>', immediate: true },
   { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
-  { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude>]', immediate: true },
+  { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
 ] as const
 
@@ -1974,6 +2076,7 @@ export const register: Register = (on, options) => {
     if (parsed.verb === 'error') return { text: parsed.message }
     if (parsed.verb === 'status') return { text: await providerStatus($) }
     if (parsed.verb === 'use') return { text: await useRoute($, parsed.name) }
+    if (parsed.verb === 'test') return { text: await testProfile($, parsed.name) }
     await loadProfiles($)
     await openPane($, PANE.provider, 'Providers')
 
@@ -2833,6 +2936,102 @@ export const register: Register = (on, options) => {
           1-9 pick (remembered across sessions){cfg.syncClaudeTheme ? ", Claude Code's theme follows" : ''} · Esc close · /skin-nexus reset for the
           configured one
         </Text>
+      </Box>
+    )
+  })
+
+  // Providers: the profiles, the step-by-step form, a connection test.
+  on('ui.render', { component: 'Pane', requestId: PANE.provider }, async ($, e) => {
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const Input = 'Input' in elements ? elements.Input : undefined
+    const Select = 'Select' in elements ? elements.Select : undefined
+    const view = await read($, provider)
+    const draft = view.draft
+
+    if (draft !== null) {
+      const label = STEP_LABEL[draft.step]
+      const isModel = draft.step === 'opus' || draft.step === 'sonnet' || draft.step === 'haiku'
+
+      return (
+        <Box flexDirection="column">
+          <Text bold>
+            {draft.editing === null ? 'New profile' : `Edit ${draft.editing}`} · {DRAFT_STEPS.indexOf(draft.step) + 1}/{DRAFT_STEPS.length}
+          </Text>
+          {draft.error !== null && <Text color="red">{draft.error}</Text>}
+          {draft.step === 'fallback' && Select !== undefined ? (
+            <Select
+              key="fallback"
+              label={label}
+              autoFocus
+              options={[
+                { value: 'no', label: 'No' },
+                { value: 'yes', label: 'Yes' },
+                { value: 'yes-default', label: 'Yes, and make it the default' },
+              ]}
+              value={draft.values.fallback ?? 'no'}
+              onSelect={value => void submitDraftField($, value)}
+            />
+          ) : isModel && draft.models.length > 0 && Select !== undefined ? (
+            <Select
+              key={draft.step}
+              label={label}
+              autoFocus
+              options={[{ value: '', label: '(empty)' }, ...draft.models.map(id => ({ value: id }))]}
+              value={draft.values[draft.step] ?? ''}
+              onSelect={value => void submitDraftField($, value)}
+            />
+          ) : Input !== undefined ? (
+            <Input
+              key={draft.step}
+              label={label}
+              autoFocus
+              value={draft.step === 'apiKey' ? '' : (draft.values[draft.step] ?? '')}
+              placeholder={draft.step === 'apiKey' && draft.values.apiKey ? `keep ${maskKey(draft.values.apiKey)}: press Enter` : ''}
+              onSubmit={value => void submitDraftField($, draft.step === 'apiKey' && value.trim() === '' ? (draft.values.apiKey ?? '') : value)}
+            />
+          ) : (
+            <Text dimColor>This surface has no text field; add profiles from the terminal.</Text>
+          )}
+          <Button key="cancel" plain hotkey="x" label="Cancel" onPress={() => void update($, provider, now => ({ ...now, draft: null }))} />
+        </Box>
+      )
+    }
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>
+          {view.linked
+            ? `Route: ${view.route === 'claude' ? 'Claude (subscription)' : hubBadge(view.route, view.model)}`
+            : 'Not a claude-nexus session: profiles can be added and tested here, switching needs claude-nexus.'}
+        </Text>
+        {view.linked && view.route !== 'claude' && <Button key="claude" plain hotkey="0" label="Use Claude" onPress={async () => $.ui.toast(await useRoute($, 'claude'))} />}
+        {view.profiles.length === 0 && <Text dimColor>No profiles yet.</Text>}
+        {view.profiles.map((one, index) => (
+          <Box key={`p-${one.name}`} flexDirection="column">
+            <Text>
+              {one.name === view.route ? '● ' : '  '}
+              <Text bold>{one.name}</Text> · {one.model} · {one.key} · {one.contextWindow} tok
+              {one.fallback ? (one.isDefault ? ' · fallback (default)' : ' · fallback') : ''}
+            </Text>
+            <Box flexDirection="row" columnGap={2}>
+              {view.linked && <Button key={`use-${one.name}`} plain hotkey={String(index + 1)} label="Use" onPress={async () => $.ui.toast(await useRoute($, one.name))} />}
+              <Button key={`test-${one.name}`} plain label="Test" onPress={async () => void (await testProfile($, one.name))} />
+              <Button key={`edit-${one.name}`} plain label="Edit" onPress={() => void startDraft($, one.name)} />
+              <Button
+                key={`del-${one.name}`}
+                plain
+                label="Delete"
+                onPress={async () => {
+                  const answer = await $.ui.ask(`Delete the profile ${one.name}?`, { header: 'Provider', options: ['Delete', 'Keep'] }).catch(() => 'Keep')
+                  if (answer === 'Delete') await saveProfiles($, (await loadProfiles($)).filter(profile => profile.name !== one.name))
+                }}
+              />
+            </Box>
+            {view.tests[one.name] !== undefined && <Text dimColor>{view.tests[one.name]}</Text>}
+          </Box>
+        ))}
+        <Button key="add" plain hotkey="a" label="Add profile" onPress={() => void startDraft($, null)} />
       </Box>
     )
   })

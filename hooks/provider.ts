@@ -117,13 +117,41 @@ export function hubBadge(route: string, model: string | null): string {
   return model === null ? `⇄ ${route}` : `⇄ ${route} · ${model}`
 }
 
+export type DraftStep = 'name' | 'hubUrl' | 'apiKey' | 'opus' | 'sonnet' | 'haiku' | 'contextWindow' | 'fallback'
+
+export const DRAFT_STEPS: readonly DraftStep[] = ['name', 'hubUrl', 'apiKey', 'opus', 'sonnet', 'haiku', 'contextWindow', 'fallback']
+
+export function nextStep(step: DraftStep): DraftStep | null {
+  return DRAFT_STEPS[DRAFT_STEPS.indexOf(step) + 1] ?? null
+}
+
+/** The pane's answers as a profile draft; fallback answers: no, yes, yes-default. */
+export function draftToProfile(values: Record<string, string>): ProfileDraft {
+  return {
+    name: values.name,
+    hubUrl: values.hubUrl,
+    apiKey: values.apiKey,
+    models: { opus: values.opus, sonnet: values.sonnet, haiku: values.haiku },
+    contextWindow: values.contextWindow,
+    fallback: values.fallback === 'yes' || values.fallback === 'yes-default',
+    isDefault: values.fallback === 'yes-default',
+  }
+}
+
 export function parseProviderArgs(
   args: string,
-): { verb: 'pane' } | { verb: 'status' } | { verb: 'use'; name: string } | { verb: 'error'; message: string } {
+):
+  | { verb: 'pane' }
+  | { verb: 'status' }
+  | { verb: 'use'; name: string }
+  | { verb: 'test'; name: string }
+  | { verb: 'error'; message: string } {
   const [verb = '', name = ''] = args.trim().toLowerCase().split(/\s+/)
   if (verb === '') return { verb: 'pane' }
   if (verb === 'status') return { verb: 'status' }
   if (verb === 'use') return name === '' ? { verb: 'error', message: 'Name a profile: /provider-nexus use <name> (or claude).' } : { verb: 'use', name }
 
-  return { verb: 'error', message: 'Use /provider-nexus, /provider-nexus status or /provider-nexus use <name|claude>.' }
+  if (verb === 'test') return name === '' ? { verb: 'error', message: 'Name a profile: /provider-nexus test <name>.' } : { verb: 'test', name }
+
+  return { verb: 'error', message: 'Use /provider-nexus, /provider-nexus status, /provider-nexus use <name|claude> or /provider-nexus test <name>.' }
 }

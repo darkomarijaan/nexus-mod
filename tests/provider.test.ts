@@ -2,10 +2,13 @@ import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import {
+  DRAFT_STEPS,
+  draftToProfile,
   fallbackChoices,
   hubBadge,
   maskKey,
   needsCompaction,
+  nextStep,
   parseProviderArgs,
   primaryModel,
   readProfiles,
@@ -94,6 +97,8 @@ describe('router link and commands', () => {
     expect(parseProviderArgs('')).toEqual({ verb: 'pane' })
     expect(parseProviderArgs('status')).toEqual({ verb: 'status' })
     expect(parseProviderArgs('use Myhub')).toEqual({ verb: 'use', name: 'myhub' })
+    expect(parseProviderArgs('test myhub')).toEqual({ verb: 'test', name: 'myhub' })
+    expect(parseProviderArgs('test').verb).toBe('error')
     expect(parseProviderArgs('use')).toEqual({ verb: 'error', message: 'Name a profile: /provider-nexus use <name> (or claude).' })
     expect(parseProviderArgs('nope').verb).toBe('error')
   })
@@ -318,5 +323,173 @@ describe('provider in a plain claude session', () => {
     mock.clock(on)
     await $.session.start?.(START as never)
     expect((await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)).text).toContain('claude-nexus')
+  })
+})
+
+describe('profile draft', () => {
+  test('steps run in order and end after fallback', () => {
+    expect(DRAFT_STEPS[0]).toBe('name')
+    expect(nextStep('apiKey')).toBe('opus')
+    expect(nextStep('fallback')).toBeNull()
+  })
+
+  test('draft values become a profile draft; yes marks fallback and default', () => {
+    expect(
+      draftToProfile({ name: 'myhub', hubUrl: 'https://h/v1', apiKey: 'k', opus: 'm', sonnet: '', haiku: '', contextWindow: '', fallback: 'yes-default' }),
+    ).toEqual({ name: 'myhub', hubUrl: 'https://h/v1', apiKey: 'k', models: { opus: 'm', sonnet: '', haiku: '' }, contextWindow: '', fallback: true, isDefault: true })
+  })
+})
+
+const PANE = { title: 'Providers', isFocused: true, bodyColumns: 100, placement: 'inline', scroll: { offset: 0, bodyRows: 20 }, view: {} } as const
+
+/** What the pane draws, as JSON: every string the person could read or an inspector see. */
+async function drawn(ui: { drawn: () => Promise<unknown> }): Promise<string> {
+  return JSON.stringify(await ui.drawn())
+}
+
+describe('provider pane', () => {
+  test('a saved profile shows its key masked, never whole', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    expect(await ui.find({ type: 'Text', text: /myhub/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: new RegExp(maskKey(MYHUB.apiKey)) })).toBeDefined()
+    expect(await drawn(ui)).not.toContain(MYHUB.apiKey)
+    await ui.unmount()
+  })
+
+  test('a session outside claude-nexus is told what claude-nexus is, and can still add', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    expect(await ui.find({ type: 'Text', text: /claude-nexus/ })).toBeDefined()
+    expect(await ui.find({ key: 'add' })).toBeDefined()
+    expect(await ui.find({ key: 'claude' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the form walks the steps, offers the hub models, and saves a masked profile', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    mock.clock(on)
+    const asked: string[] = []
+    const sent: unknown[] = []
+    on('http.fetch', (_, e) => {
+      asked.push(`${e.url} ${JSON.stringify(e.init?.headers ?? {})}`)
+      if (e.init?.body !== undefined) sent.push(JSON.parse(e.init.body))
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ data: [{ id: 'm-one' }, { id: 'm-two' }] }) } }
+    })
+    const writes: string[] = []
+    on('state.set', (_, e, next) => {
+      writes.push(JSON.stringify(e.value))
+      return next(e)
+    })
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'add' })
+    expect(await ui.find({ type: 'Input', key: 'name' })).toBeDefined()
+    await ui.input({ key: 'name', text: ' omni ' })
+    await ui.input({ key: 'hubUrl', text: 'https://omni.example/v1/' })
+    await ui.input({ key: 'apiKey', text: 'sk-abcdefghijklmnop' })
+    expect(asked).toEqual(['https://omni.example/v1/models {"x-api-key":"sk-abcdefghijklmnop","authorization":"Bearer sk-abcdefghijklmnop"}'])
+    // The model steps now pick from what the hub listed.
+    expect(await ui.find({ type: 'Select', key: 'opus' })).toBeDefined()
+    await ui.select({ key: 'opus', value: 'm-one' })
+    await ui.select({ key: 'sonnet', value: '' })
+    await ui.select({ key: 'haiku', value: '' })
+    await ui.input({ key: 'contextWindow', text: '' })
+    await ui.select({ key: 'fallback', value: 'yes-default' })
+    // What was saved, read back through the store: the tidied URL, the one model, the key kept whole there.
+    const answer = await $.command.run({ command: 'provider-nexus', args: 'test omni' } as never)
+    expect(answer.text).toContain('omni (https://omni.example/v1):')
+    expect(sent).toEqual([{ model: 'm-one', max_tokens: 16, messages: [{ role: 'user', content: 'Reply with: ok' }] }])
+    expect(asked.at(-1)).toContain('https://omni.example/v1/messages')
+    expect(asked.at(-1)).toContain('"x-api-key":"sk-abcdefghijklmnop"')
+    // Once saved the draft (and the key it held) is gone and the list shows the key masked.
+    const last = JSON.parse(writes.filter(one => one.includes('"draft"')).at(-1) ?? '{}') as { draft: unknown; profiles: { key: string }[] }
+    expect(last.draft).toBeNull()
+    expect(last.profiles[0]).toMatchObject({ key: 'sk-a…mnop', contextWindow: 200_000, fallback: true, isDefault: true })
+    expect(writes.at(-1)).not.toContain('sk-abcdefghijklmnop')
+    expect(await drawn(ui)).not.toContain('sk-abcdefghijklmnop')
+    await ui.unmount()
+  })
+
+  test('a mistake sends the form back to the step it belongs to', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: '' } }))
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'add' })
+    await ui.input({ key: 'name', text: 'myhub' })
+    await ui.input({ key: 'hubUrl', text: 'https://h.example/v1' })
+    await ui.input({ key: 'apiKey', text: 'k-1234567890' })
+    // No model list came back, so the model steps are plain fields.
+    await ui.input({ key: 'opus', text: 'm' })
+    await ui.input({ key: 'sonnet', text: '' })
+    await ui.input({ key: 'haiku', text: '' })
+    await ui.input({ key: 'contextWindow', text: '' })
+    await ui.select({ key: 'fallback', value: 'no' })
+    expect(await ui.find({ type: 'Text', text: /already exists/ })).toBeDefined()
+    expect(await ui.find({ type: 'Input', key: 'name' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('cancel drops the draft and the key with it', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: '' } }))
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'add' })
+    await ui.input({ key: 'name', text: 'omni' })
+    await ui.input({ key: 'hubUrl', text: 'https://omni.example/v1' })
+    await ui.input({ key: 'apiKey', text: 'sk-abcdefghijklmnop' })
+    await ui.press({ key: 'cancel' })
+    expect(await ui.find({ key: 'add' })).toBeDefined()
+    expect(await drawn(ui)).not.toContain('sk-abcdefghijklmnop')
+    await ui.unmount()
+  })
+
+  test('test connection reports each mapped model', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [{ ...MYHUB, models: { opus: 'a', haiku: 'b' } }] })
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    mock.clock(on)
+    const asked: string[] = []
+    on('http.fetch', (_, e) => {
+      asked.push(`${e.url} ${JSON.parse(e.init?.body ?? '{}').model}`)
+      return { value: { status: 200, ok: true, headers: {}, text: '{"type":"message","content":[{"type":"text","text":"ok"}]}' } }
+    })
+    const answer = await $.command.run({ command: 'provider-nexus', args: 'test myhub' } as never)
+    expect(answer.text).toContain('✓ a')
+    expect(answer.text).toContain('✓ b')
+    expect(asked).toEqual(['https://hub.example.com/v1/messages a', 'https://hub.example.com/v1/messages b'])
+  })
+
+  test('a failing hub is reported per model with its status, the key masked out', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    mock.clock(on)
+    on('http.fetch', () => ({ value: { status: 401, ok: false, headers: {}, text: `bad key ${MYHUB.apiKey}` } }))
+    const answer = await $.command.run({ command: 'provider-nexus', args: 'test myhub' } as never)
+    expect(answer.text).toContain('✗ antigravity/gemini-3.8-flash-tiered  HTTP 401')
+    expect(answer.text).not.toContain(MYHUB.apiKey)
+    expect((await $.command.run({ command: 'provider-nexus', args: 'test nope' } as never)).text).toBe('No profile named nope.')
   })
 })
