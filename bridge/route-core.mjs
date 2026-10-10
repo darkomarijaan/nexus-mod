@@ -102,7 +102,7 @@ export function withSafeToolIds(body) {
 export function planLimit(status, headers) {
   if (status !== 429) return null
   const unified = Object.entries(headers).filter(([name]) => name.toLowerCase().startsWith('anthropic-ratelimit-unified-'))
-  const isRejected = unified.some(([name, value]) => /status$/i.test(name) && String(value).toLowerCase() === 'rejected')
+  const isRejected = unified.some(([name, value]) => /^anthropic-ratelimit-unified-(?:[a-z0-9]+-)?status$/i.test(name) && !/overage/i.test(name) && String(value).toLowerCase() === 'rejected')
   if (!isRejected) return null
   const reset = Number(headers['anthropic-ratelimit-unified-reset'])
   const claim = headers['anthropic-ratelimit-unified-representative-claim']

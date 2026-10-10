@@ -116,6 +116,23 @@ test('a 429 is a plan limit only when a unified status says rejected', () => {
   assert.equal(planLimit(200, { 'anthropic-ratelimit-unified-status': 'rejected' }), null)
 })
 
+test('the overage status never counts as a plan limit', () => {
+  assert.equal(
+    planLimit(429, {
+      'anthropic-ratelimit-unified-status': 'allowed',
+      'anthropic-ratelimit-unified-overage-status': 'rejected',
+      'anthropic-ratelimit-unified-overage-disabled-reason': 'out_of_credits',
+    }),
+    null,
+  )
+  assert.equal(planLimit(429, { 'anthropic-ratelimit-unified-overage-status': 'rejected' }), null)
+  assert.deepEqual(
+    planLimit(429, { 'anthropic-ratelimit-unified-5h-status': 'rejected', 'anthropic-ratelimit-unified-overage-status': 'rejected' }),
+    { window: null, resetsAt: null },
+  )
+  assert.deepEqual(planLimit(429, { 'Anthropic-Ratelimit-Unified-Status': 'Rejected' }), { window: null, resetsAt: null })
+})
+
 test('only the router address is accepted as Host', () => {
   assert.equal(hostAllowed('127.0.0.1:5000', 5000), true)
   assert.equal(hostAllowed('localhost:5000', 5000), true)
