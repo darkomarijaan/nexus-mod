@@ -148,6 +148,10 @@ const themeName = atom({ plugin: 'nexus', key: 'theme' } as const, 'default')
 const provider = atom({ plugin: 'nexus', key: 'provider' } as const, IDLE_PROVIDER)
 // The router a claude-nexus session runs behind; its control token lives here once the env forgets it.
 const routerLink = atom({ plugin: 'nexus', key: 'routerLink' } as const, null as NexusRouterLink | null)
+// The listening loop's generation: a reload starts a newer one, and the older ends at its next turn of the loop.
+const routerWatcher = atom({ plugin: 'nexus', key: 'routerWatcher' } as const, 0)
+// When Claude's limit resets after a fallback, so a turn's end can offer the way back.
+const claudeBackAt = atom({ plugin: 'nexus', key: 'claudeBackAt' } as const, null as number | null)
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -1512,7 +1516,7 @@ async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo
       await $.turn.abort({ turnId })
       $.ui.toast('Turn stopped to save quota.')
     } else if (switchTo !== undefined && answer === `Switch to ${switchTo} now`) {
-      $.ui.toast(await useRoute($, switchTo))
+      $.ui.toast(await useRoute($, switchTo, { askCompact: false }))
     }
   } catch {
     // nobody to ask: the turn goes on
@@ -1602,19 +1606,21 @@ const SWITCH_ANYWAY = 'Switch anyway'
 const CANCEL = 'Cancel'
 
 /** Points the router at Claude or a profile; the text says what happened. */
-async function useRoute($: Engine, name: string): Promise<string> {
+async function useRoute($: Engine, name: string, options: { askCompact?: boolean } = {}): Promise<string> {
   if ((await ensureRouterLink($)) === null) return NOT_LINKED
   if (name === 'claude') {
     const answer = await routerCall($, 'POST', '/__nexus/route', { route: 'claude' })
     if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
     await update($, provider, now => ({ ...now, route: 'claude', model: null }))
+    await update($, claudeBackAt, () => null)
 
     return 'Back on Claude (subscription).'
   }
   const profile = (await loadProfiles($)).find(one => one.name === name)
   if (profile === undefined) return `No profile named ${name}. /provider-nexus opens the list.`
   const tokens = (await read($, hud)).tokens
-  if (needsCompaction(tokens, profile.contextWindow, 0.8)) {
+  // Asking to compact sends a request to Claude: not while Claude's limit holds one.
+  if (options.askCompact !== false && needsCompaction(tokens, profile.contextWindow, 0.8)) {
     const choice = await $.ui
       .ask(`The context (${tokens ?? 0} tokens) is past 80% of ${profile.name}'s window (${profile.contextWindow}). Compact first?`, {
         header: 'Provider',
@@ -1651,10 +1657,6 @@ async function providerStatus($: Engine): Promise<string> {
   ].join('\n')
 }
 
-// When Claude's quota comes back after a fallback: offered once, at a turn's end.
-let claudeBackAt: number | null = null
-let isWatchingRouter = false
-
 const DONT_SWITCH = "Don't switch"
 const continueOn = (name: string) => `Continue on ${name}`
 
@@ -1662,16 +1664,16 @@ async function decide($: Engine, id: string, action: 'retry' | 'release'): Promi
   await routerCall($, 'POST', '/__nexus/decision', { id, action }).catch(() => undefined)
 }
 
-async function handleRouterEvent($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<void> {
-  if (event.type === 'upstream-error') {
-    $.ui.toast(`The hub ${String(event.route)} answered ${String(event.status)}. /provider-nexus use claude goes back to Claude.`, { timeoutMs: 8000 })
-    return
+/** What becomes of a held request: continue it on a hub (retry) or let Claude's refusal through (release). May throw. */
+async function limitAction($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<'retry' | 'release'> {
+  if (typeof event.resetsAt === 'number') {
+    const resetsAt = event.resetsAt
+    await update($, claudeBackAt, () => resetsAt)
   }
-  if (event.type !== 'limit' || typeof event.id !== 'string') return
-  const id = event.id
-  if (typeof event.resetsAt === 'number') claudeBackAt = event.resetsAt
+  // Already on a hub (the person switched, or a subagent's request was held): nothing to choose.
+  if ((await read($, provider)).route !== 'claude') return 'retry'
   const choices = fallbackChoices(await loadProfiles($))
-  if (cfg.fallbackMode === 'off' || choices.length === 0) return decide($, id, 'release')
+  if (cfg.fallbackMode === 'off' || choices.length === 0) return 'release'
   const now = await $.clock.now()
   const window = event.window === 'seven_day' ? 'weekly' : event.window === 'five_hour' ? '5-hour' : 'plan'
   const when = typeof event.resetsAt === 'number' ? ` (resets in ${untilReset(event.resetsAt, now)})` : ''
@@ -1692,31 +1694,56 @@ async function handleRouterEvent($: Engine, cfg: NexusConfig, event: Record<stri
       await setWaiting($, false)
     }
   }
-  if (target === undefined) return decide($, id, 'release')
-  const text = await useRoute($, target)
+  if (target === undefined) return 'release'
+  // The held request waits on this: switch the route only; the compaction ask would itself go to the exhausted Claude.
+  const text = await useRoute($, target, { askCompact: false })
   $.ui.toast(text, { timeoutMs: 8000 })
-  await decide($, id, (await read($, provider)).route === target ? 'retry' : 'release')
+
+  return (await read($, provider)).route === target ? 'retry' : 'release'
 }
 
-/** Listens to the router for the session's life; stops once it cannot be reached. */
-async function watchRouter($: Engine, cfg: NexusConfig): Promise<void> {
-  if (isWatchingRouter) return
-  isWatchingRouter = true
+async function handleRouterEvent($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<void> {
+  if (event.type === 'upstream-error') {
+    $.ui.toast(`The hub ${String(event.route)} answered ${String(event.status)}. /provider-nexus use claude goes back to Claude.`, { timeoutMs: 8000 })
+    return
+  }
+  if (event.type !== 'limit' || typeof event.id !== 'string') return
+  let action: 'retry' | 'release' = 'release'
+  try {
+    action = await limitAction($, cfg, event)
+  } catch {
+    // whatever went wrong, the held request must not wait out its timeout
+    action = 'release'
+  }
+  await decide($, event.id, action)
+}
+
+/**
+ * Listens to the router for the session's life. Each start takes over: it writes a newer generation and an older
+ * loop (from before a reload) ends at its next turn. Without `isTakeover` a loop is only started when none ever was.
+ * An unreachable router is polled again after a growing pause (2 s up to 30 s), never given up on.
+ */
+async function watchRouter($: Engine, cfg: NexusConfig, isTakeover: boolean): Promise<void> {
+  if (!isTakeover && (await read($, routerWatcher)) !== 0) return
+  const mine = await update($, routerWatcher, now => now + 1)
   let failures = 0
   try {
-    while (failures < 5) {
+    while ((await read($, routerWatcher)) === mine) {
       const answer = await routerCall($, 'GET', '/__nexus/events?wait=25').catch(() => ({ ok: false, status: 0, data: {} as Record<string, unknown> }))
       if (!answer.ok) {
         failures += 1
-        await $.clock.sleep(2000).catch(() => undefined)
+        await $.clock.sleep(Math.min(30_000, 2000 * 2 ** (failures - 1)))
         continue
       }
       failures = 0
+      // Events this poll already took are handled even if a newer loop has come: the router will not serve them again.
       const events = Array.isArray(answer.data.events) ? (answer.data.events as Record<string, unknown>[]) : []
       for (const event of events) await handleRouterEvent($, cfg, event).catch(() => undefined)
     }
+  } catch {
+    // a wait that was cut short: this loop ends, and the next start can begin another
   } finally {
-    isWatchingRouter = false
+    await update($, routerWatcher, now => (now === mine ? 0 : now)).catch(() => undefined)
   }
 }
 
@@ -2111,7 +2138,7 @@ export const register: Register = (on, options) => {
     await loadProfiles($)
     if ((await ensureRouterLink($)) !== null) {
       void providerStatus($).catch(() => undefined)
-      void watchRouter($, cfg).catch(() => undefined)
+      void watchRouter($, cfg, true).catch(() => undefined)
     }
     void refreshHud($, true).catch(() => undefined)
     $.clock.every(4000, () => {
@@ -2169,7 +2196,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
 
   on('command.run', { command: 'provider-nexus' }, async ($, e) => {
-    if ((await ensureRouterLink($)) !== null) void watchRouter($, cfg).catch(() => undefined)
+    if ((await ensureRouterLink($)) !== null) void watchRouter($, cfg, false).catch(() => undefined)
     const parsed = parseProviderArgs(e.args)
     if (parsed.verb === 'error') return { text: parsed.message }
     if (parsed.verb === 'status') return { text: await providerStatus($) }
@@ -2423,8 +2450,8 @@ export const register: Register = (on, options) => {
           if (what === null) return
           const current = await read($, turn)
           if (current.isWorking && current.id !== null) {
-            const linked = (await read($, routerLink)) !== null
-            const choice = linked ? fallbackChoices(await loadProfiles($))[0]?.name : undefined
+            const onClaude = (await read($, routerLink)) !== null && (await read($, provider)).route === 'claude'
+            const choice = onClaude ? fallbackChoices(await loadProfiles($))[0]?.name : undefined
             await askQuotaMidTurn($, what, current.id, choice)
           } else {
             quotaPending = what
@@ -2553,8 +2580,9 @@ export const register: Register = (on, options) => {
       }
       // 10. Claude's quota is back after a fallback: offered once, at the turn's end
       const view = await read($, provider)
-      if (view.route !== 'claude' && claudeBackAt !== null && (await $.clock.now()) >= claudeBackAt) {
-        claudeBackAt = null
+      const backAt = await read($, claudeBackAt)
+      if (view.route !== 'claude' && backAt !== null && (await $.clock.now()) >= backAt) {
+        await update($, claudeBackAt, () => null)
         void $.ui
           .ask("Claude's quota has reset. Go back to Claude?", { header: 'Provider', options: ['Back to Claude', `Stay on ${view.route}`] })
           .then(async answer => {

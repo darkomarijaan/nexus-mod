@@ -148,7 +148,7 @@ function routerEnv(on: On, events: unknown[][] = []) {
     return { value: undefined }
   })
   const calls: { url: string; method: string; headers: Record<string, string>; body: unknown }[] = []
-  const net = { isDown: false, routeStatus: 200 }
+  const net = { isDown: false, routeStatus: 200, failKey: null as string | null }
   on('http.fetch', (_, e) => {
     const body = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     calls.push({ url: e.url, method: e.init?.method ?? 'GET', headers: e.init?.headers ?? {}, body })
@@ -169,6 +169,8 @@ function routerEnv(on: On, events: unknown[][] = []) {
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   const clock = mock.clock(on)
+  // A state value that reads back as nothing, for the key a test names: what a damaged state would do.
+  on('state.get', (_, e, next) => (net.failKey === e.key ? ({ value: null, version: 1 } as never) : next(e)))
   // Every write to state, as the JSON the engine would keep: what a reload (or anyone) could read back.
   const writes: { key: string; json: string; value: unknown }[] = []
   on('state.set', (_, e, next) => {
@@ -623,19 +625,19 @@ describe('fallback when Claude quota runs out', () => {
     return routerEnv(on, [[LIMIT]])
   }
 
-  async function untilDecision(calls: { url: string }[]): Promise<void> {
-    for (let i = 0; i < 400 && !calls.some(one => one.url.endsWith('/__nexus/decision')); i++) await Promise.resolve()
+  async function untilDecision(calls: { url: string }[], clock: { settle: () => Promise<void> }): Promise<void> {
+    for (let i = 0; i < 50 && !calls.some(one => one.url.endsWith('/__nexus/decision')); i++) await clock.settle()
   }
 
   test('ask: the person picks the profile, the held request is retried there', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
     mock.store(on, { providers: [MYHUB] })
-    const { calls } = limitRouter(on)
+    const { calls, clock } = limitRouter(on)
     on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => ({
       result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: 'Continue on myhub' } },
     }))
     await $.session.start?.(START as never)
     await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
-    await untilDecision(calls)
+    await untilDecision(calls, clock)
     const route = calls.find(one => one.url.endsWith('/__nexus/route'))
     const decision = calls.find(one => one.url.endsWith('/__nexus/decision'))
     expect((route?.body as { route?: string } | undefined)?.route).toBe('myhub')
@@ -644,7 +646,7 @@ describe('fallback when Claude quota runs out', () => {
 
   test('auto: the default fallback profile is used without asking', { options: { ...BASE_OPTIONS, fallbackMode: 'auto' } }, async ($, on) => {
     mock.store(on, { providers: [MYHUB] })
-    const { calls } = limitRouter(on)
+    const { calls, clock } = limitRouter(on)
     let asked = false
     on('tool.call', { tool: 'AskUserQuestion' }, () => {
       asked = true
@@ -652,7 +654,7 @@ describe('fallback when Claude quota runs out', () => {
     })
     await $.session.start?.(START as never)
     await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
-    await untilDecision(calls)
+    await untilDecision(calls, clock)
     expect((calls.find(one => one.url.endsWith('/__nexus/route'))?.body as { route?: string } | undefined)?.route).toBe('myhub')
     expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'retry' })
     expect(asked).toBe(false)
@@ -660,30 +662,30 @@ describe('fallback when Claude quota runs out', () => {
 
   test('declining the switch releases the held request', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
     mock.store(on, { providers: [MYHUB] })
-    const { calls } = limitRouter(on)
+    const { calls, clock } = limitRouter(on)
     on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => ({
       result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: "Don't switch" } },
     }))
     await $.session.start?.(START as never)
     await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
-    await untilDecision(calls)
+    await untilDecision(calls, clock)
     expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'release' })
     expect(calls.some(one => one.url.endsWith('/__nexus/route'))).toBe(false)
   })
 
   test('off: the held request is released at once', { options: { ...BASE_OPTIONS, fallbackMode: 'off' } }, async ($, on) => {
     mock.store(on, { providers: [MYHUB] })
-    const { calls } = limitRouter(on)
+    const { calls, clock } = limitRouter(on)
     await $.session.start?.(START as never)
     await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
-    await untilDecision(calls)
+    await untilDecision(calls, clock)
     expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'release' })
     expect(calls.some(one => one.url.endsWith('/__nexus/route'))).toBe(false)
   })
 
   test('no fallback profile: released, nothing asked', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
     mock.store(on, { providers: [{ ...MYHUB, fallback: false, isDefault: false }] })
-    const { calls } = limitRouter(on)
+    const { calls, clock } = limitRouter(on)
     let asked = false
     on('tool.call', { tool: 'AskUserQuestion' }, () => {
       asked = true
@@ -691,14 +693,14 @@ describe('fallback when Claude quota runs out', () => {
     })
     await $.session.start?.(START as never)
     await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
-    await untilDecision(calls)
+    await untilDecision(calls, clock)
     expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'release' })
     expect(asked).toBe(false)
   })
 })
 
 describe('back to Claude and the quota guard', () => {
-  const LIMIT = { type: 'limit', id: 'h1', window: 'five_hour', resetsAt: 9_000_000 }
+  const LIMIT = { type: 'limit', id: 'h1', window: 'five_hour', resetsAt: 120_000 }
 
   test('after the reset, a turn end offers Claude again, once', { options: { ...BASE_OPTIONS, fallbackMode: 'auto' } }, async ($, on) => {
     mock.store(on, { providers: [MYHUB] })
@@ -712,12 +714,12 @@ describe('back to Claude and the quota guard', () => {
     const end = { answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' } as never
     await $.session.start?.(START as never)
     await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
-    for (let i = 0; i < 400 && !calls.some(one => one.url.endsWith('/__nexus/decision')); i++) await Promise.resolve()
+    for (let i = 0; i < 50 && !calls.some(one => one.url.endsWith('/__nexus/decision')); i++) await clock.settle()
     // Before the reset time nothing is offered.
     await $.turn.complete(end)
     await clock.settle()
     expect(offers).toEqual([])
-    await clock.advance(9_000_000)
+    await clock.advance(120_000)
     await $.turn.complete(end)
     await clock.settle()
     expect(offers).toEqual(["Claude's quota has reset. Go back to Claude?"])
@@ -748,5 +750,155 @@ describe('back to Claude and the quota guard', () => {
     await clock.settle()
     expect(choices).toEqual([['Keep going', 'Switch to myhub now', 'Stop this turn']])
     expect(calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => (one.body as { route: string }).route)).toEqual(['myhub'])
+  })
+})
+
+describe('the router watcher and held requests', () => {
+  const LIMIT = { type: 'limit', id: 'h1', window: 'five_hour', resetsAt: 9_000_000 }
+  const decisions = (calls: { url: string; body: unknown }[]) => calls.filter(one => one.url.endsWith('/__nexus/decision')).map(one => one.body)
+  const routes = (calls: { url: string; body: unknown }[]) => calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => (one.body as { route: string }).route)
+  const polls = (calls: { url: string }[]) => calls.filter(one => one.url.includes('/__nexus/events')).length
+  async function settled(calls: { url: string }[], clock: { settle: () => Promise<void> }): Promise<void> {
+    for (let i = 0; i < 50 && !calls.some(one => one.url.endsWith('/__nexus/decision')); i++) await clock.settle()
+  }
+
+  test('a limit while the context is past 80% of the hub window: no compaction ask, route then retry', { options: { ...BASE_OPTIONS, fallbackMode: 'auto' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const events: unknown[][] = []
+    const { calls, clock } = routerEnv(on, events)
+    let asked = ''
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      asked = e.questions[0]?.question ?? ''
+      return { result: { questions: e.questions, answers: { [asked]: 'Cancel' } } }
+    })
+    on('session.measure', (_, e) => ({ changed: e.changed }))
+    await $.session.start?.(START as never)
+    await clock.settle()
+    await $.session.measure({ context: { tokens: 900_000, window: 1_000_000, percent: 90 }, rateLimits: [], changed: ['context'] } as never)
+    events.push([LIMIT])
+    await clock.advance(2000)
+    await settled(calls, clock)
+    expect(asked).toBe('')
+    expect(routes(calls)).toEqual(['myhub'])
+    expect(decisions(calls)).toEqual([{ id: 'h1', action: 'retry' }])
+    // The route POST came before the decision.
+    expect(calls.findIndex(one => one.url.endsWith('/__nexus/route'))).toBeLessThan(calls.findIndex(one => one.url.endsWith('/__nexus/decision')))
+  })
+
+  test('a start after a reload takes over: only the newest loop polls and decides', { options: { ...BASE_OPTIONS, fallbackMode: 'off' } }, async ($, on) => {
+    mock.store(on)
+    const events: unknown[][] = []
+    const { calls, clock } = routerEnv(on, events)
+    await $.session.start?.(START as never)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    const before = polls(calls)
+    // Both loops wake at 2 s; the older one finds it is no longer the newest and ends without polling.
+    await clock.advance(2000)
+    expect(polls(calls) - before).toBe(1)
+    events.push([LIMIT])
+    await clock.advance(4000)
+    await settled(calls, clock)
+    expect(decisions(calls)).toEqual([{ id: 'h1', action: 'release' }])
+  })
+
+  test('an error while handling a limit still releases the held request', { options: { ...BASE_OPTIONS, fallbackMode: 'auto' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const events: unknown[][] = []
+    const { calls, clock, net } = routerEnv(on, events)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    net.failKey = 'provider'
+    events.push([LIMIT])
+    await clock.advance(2000)
+    await settled(calls, clock)
+    expect(decisions(calls)).toEqual([{ id: 'h1', action: 'release' }])
+  })
+
+  test('already on a hub: the held request is retried at once, nothing asked or switched', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const events: unknown[][] = []
+    const { calls, clock } = routerEnv(on, events)
+    let asked = false
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      asked = true
+      return { result: {} as never }
+    })
+    await $.session.start?.(START as never)
+    await clock.settle()
+    await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    events.push([LIMIT])
+    await clock.advance(2000)
+    await settled(calls, clock)
+    expect(decisions(calls)).toEqual([{ id: 'h1', action: 'retry' }])
+    expect(routes(calls)).toEqual(['myhub'])
+    expect(asked).toBe(false)
+  })
+
+  test('the quota question offers the switch only while on Claude', { options: { ...BASE_OPTIONS, quotaGuard: 90 } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { clock } = routerEnv(on)
+    const choices: string[][] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      choices.push((e.questions[0]?.options ?? []).map(one => one.label))
+      return { result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: 'Keep going' } } }
+    })
+    on('session.measure', (_, e) => ({ changed: e.changed }))
+    on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    await $.turn.start({ turnId: 't1' } as never)
+    await $.session.measure({
+      context: { tokens: 1000, window: 1_000_000, percent: 1 },
+      rateLimits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: new Date(3_600_000).toISOString() }],
+      changed: ['rateLimits'],
+    } as never)
+    await clock.settle()
+    expect(choices).toEqual([['Keep going', 'Stop this turn']])
+  })
+
+  test('going back to Claude by hand cancels the later offer', { options: { ...BASE_OPTIONS, fallbackMode: 'auto' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const events: unknown[][] = []
+    const { calls, clock } = routerEnv(on, events)
+    let asked = false
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      asked = true
+      return { result: {} as never }
+    })
+    on('turn.complete', (_, e) => ({ text: e.answer }))
+    await $.session.start?.(START as never)
+    await clock.settle()
+    events.push([{ ...LIMIT, resetsAt: 60_000 }])
+    await clock.advance(2000)
+    await settled(calls, clock)
+    await $.command.run({ command: 'provider-nexus', args: 'use claude' } as never)
+    await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    await clock.advance(60_000)
+    await $.turn.complete({ answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' } as never)
+    await clock.settle()
+    expect(asked).toBe(false)
+  })
+
+  test('the watcher keeps polling a router that does not answer, pausing longer each time, and still hears it later', { options: { ...BASE_OPTIONS, fallbackMode: 'off' } }, async ($, on) => {
+    mock.store(on)
+    const events: unknown[][] = []
+    const { calls, clock } = routerEnv(on, events)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    expect(polls(calls)).toBe(1)
+    // 2 s, 4 s, 8 s, 16 s, 30 s, 30 s: a seventh poll, well past five failures.
+    for (const pause of [2000, 4000, 8000, 16_000, 30_000, 30_000]) {
+      const seen = polls(calls)
+      await clock.advance(pause - 1)
+      expect(polls(calls)).toBe(seen)
+      await clock.advance(1)
+      expect(polls(calls)).toBe(seen + 1)
+    }
+    events.push([LIMIT])
+    await clock.advance(30_000)
+    await settled(calls, clock)
+    expect(decisions(calls)).toEqual([{ id: 'h1', action: 'release' }])
   })
 })

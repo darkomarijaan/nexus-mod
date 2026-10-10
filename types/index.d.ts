@@ -147,6 +147,10 @@ declare module 'claude-code' {
       provider: NexusProviderView
       /** The router this claude-nexus session runs behind; null in a plain session. */
       routerLink: NexusRouterLink | null
+      /** The generation of the loop that listens to the router; a loop ends once this is no longer its own (0: none yet). */
+      routerWatcher: number
+      /** When Claude's plan limit resets after a fallback (ms); null: nothing to offer. */
+      claudeBackAt: number | null
     }
   }
 }
