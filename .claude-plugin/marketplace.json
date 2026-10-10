@@ -1,0 +1,8 @@
+{
+  "name": "nexus-mod",
+  "owner": { "name": "eko" },
+  "metadata": {
+    "description": "Nexus: an all-in-one workspace suite mod for Claude Code."
+  },
+  "plugins": [{ "name": "nexus", "source": "./" }]
+}

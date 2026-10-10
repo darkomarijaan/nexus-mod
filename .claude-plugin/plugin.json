@@ -1,0 +1,142 @@
+{
+  "name": "nexus",
+  "version": "0.2.0",
+  "author": {
+    "name": "eko"
+  },
+  "description": "All-in-one workspace suite: HUD and session monitor, prompt enhancer, assumption review, command shield, secret masking, turn checkpoints with rollback, visual design previews, auto-verify and clean delivery.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "shield": {
+      "type": "boolean",
+      "title": "Command Shield",
+      "description": "Ask before dangerous shell commands run (recursive deletes, force pushes, dropped tables, pushes to protected branches).",
+      "default": true
+    },
+    "protectedBranches": {
+      "type": "string",
+      "title": "Protected branches",
+      "description": "Comma-separated branch names the shield guards against pushes.",
+      "default": "main,master,production,release"
+    },
+    "sanitizer": {
+      "type": "boolean",
+      "title": "Secret Leak Sanitizer",
+      "description": "Mask API keys, tokens, passwords and private keys in every row before it is stored or sent to the model.",
+      "default": true
+    },
+    "checkpoints": {
+      "type": "boolean",
+      "title": "Turn checkpoints",
+      "description": "Snapshot the project into a private shadow git repo before the first file change of each turn, so /rollback can undo the turn.",
+      "default": true
+    },
+    "assumptionAudit": {
+      "type": "string",
+      "title": "Assumption review",
+      "description": "plan: review assumptions when a plan is presented. first-edit: also before the first file edit of each turn. off: never.",
+      "options": [
+        "plan",
+        "first-edit",
+        "off"
+      ],
+      "default": "plan"
+    },
+    "autoVerify": {
+      "type": "boolean",
+      "title": "Auto lint/test",
+      "description": "After a turn that changed files, run the project's linters and tests and send failures back to Claude to fix.",
+      "default": true
+    },
+    "maxHealAttempts": {
+      "type": "number",
+      "title": "Self-heal attempts",
+      "description": "How many times a failing check is sent back to Claude before giving up.",
+      "default": 2
+    },
+    "verifyTimeoutSec": {
+      "type": "number",
+      "title": "Check timeout (seconds)",
+      "description": "Longest a single lint or test command may run.",
+      "default": 180
+    },
+    "quietTranscript": {
+      "type": "boolean",
+      "title": "Quiet transcript",
+      "description": "Draw routine tool calls as one dim line and hide their raw output (errors and file edits stay visible).",
+      "default": true
+    },
+    "executiveSummary": {
+      "type": "boolean",
+      "title": "Executive summary",
+      "description": "Ask Claude to skip progress chatter and end each change with What Changed / Verification Status / Next Steps.",
+      "default": true
+    },
+    "designLens": {
+      "type": "boolean",
+      "title": "Design Lens",
+      "description": "Give Claude a tool that shows UI options as live visual cards in the browser and a pane, and sends your pick back.",
+      "default": true
+    },
+    "devServerUrl": {
+      "type": "string",
+      "title": "Dev server URL",
+      "description": "URL /preview captures. Empty: probe common localhost ports.",
+      "default": ""
+    },
+    "helperModel": {
+      "type": "string",
+      "title": "Helper model",
+      "description": "Model used for prompt enhancement and assumption extraction.",
+      "default": "haiku"
+    },
+    "notify": {
+      "type": "boolean",
+      "title": "Done / approval alerts",
+      "description": "A desktop notification and a sound when a long turn finishes, and a sound when Claude needs your approval.",
+      "default": true
+    },
+    "notifyAfterSec": {
+      "type": "number",
+      "title": "Alert after (seconds)",
+      "description": "Only turns that ran at least this long raise the done alert.",
+      "default": 30
+    },
+    "compactGuard": {
+      "type": "boolean",
+      "title": "Compaction guard",
+      "description": "Warn at 80% context, and tell compaction to keep file paths, open tasks, check results and decisions.",
+      "default": true
+    },
+    "handoff": {
+      "type": "boolean",
+      "title": "Session handoff",
+      "description": "Save a short summary when a session ends and show it when the next session in the project starts (/handoff).",
+      "default": true
+    },
+    "loopGuard": {
+      "type": "boolean",
+      "title": "Loop detector",
+      "description": "When Claude repeats the same failing call, tell it to stop and change approach; warn when a turn runs very long.",
+      "default": true
+    },
+    "maxAgents": {
+      "type": "number",
+      "title": "Max subagents at once",
+      "description": "Refuse new subagents past this many running at once. 0: no limit.",
+      "default": 0
+    },
+    "suggestNext": {
+      "type": "boolean",
+      "title": "Next-step suggestion",
+      "description": "After a reply, offer its first Next Step as the prompt's dim suggestion (Tab takes it).",
+      "default": true
+    },
+    "commitHelper": {
+      "type": "boolean",
+      "title": "Commit helper",
+      "description": "After a turn that changed files, offer a Commit button and /commit with a drafted message.",
+      "default": true
+    }
+  }
+}
