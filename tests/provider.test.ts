@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import {
   fallbackChoices,
@@ -112,5 +113,118 @@ describe('router link and commands', () => {
   test('the HUD badge names the profile and its model', () => {
     expect(hubBadge('myhub', 'antigravity/gemini-3.8-flash-tiered')).toBe('⇄ myhub · antigravity/gemini-3.8-flash-tiered')
     expect(hubBadge('myhub', null)).toBe('⇄ myhub')
+  })
+})
+
+const BASE_OPTIONS = {
+  checkpoints: false,
+  autoVerify: false,
+  designLens: false,
+  assumptionAudit: 'off',
+  handoff: false,
+  notify: false,
+  suggestNext: false,
+  compactGuard: false,
+  loopGuard: false,
+  trimOutput: false,
+  quotaGuard: 0,
+  turnFooter: false,
+} as const
+
+const START = { cwd: 'C:/app', surface: 'terminal', isInteractive: true }
+const CONTROL = 'c'.repeat(64)
+
+function routerEnv(on: On) {
+  const env: Record<string, string | undefined> = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:51234', NEXUS_ROUTER_TOKEN: CONTROL }
+  on('env.get', (_, e) => ({ value: env[e.name] }))
+  on('env.set', (_, e) => {
+    env[e.name] = e.value
+    return { value: undefined }
+  })
+  const calls: { url: string; method: string; headers: Record<string, string>; body: unknown }[] = []
+  on('http.fetch', (_, e) => {
+    const body = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
+    calls.push({ url: e.url, method: e.init?.method ?? 'GET', headers: e.init?.headers ?? {}, body })
+    const data = e.url.endsWith('/__nexus/status') ? { route: 'claude', model: null, counts: { claude: 0, hub: 0 }, held: [] } : e.url.includes('/__nexus/events') ? { events: [] } : { ok: true }
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(data) } }
+  })
+  on('session.root', () => ({ value: 'C:/app' }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  mock.clock(on)
+  // Every write to state, as the JSON the engine would keep: what a reload (or anyone) could read back.
+  const written: string[] = []
+  on('state.set', (_, e, next) => {
+    written.push(JSON.stringify(e.value))
+    return next(e)
+  })
+
+  return { env, calls, written }
+}
+
+describe('router link in a claude-nexus session', () => {
+  test('the control token is read once, kept in state, and taken out of the env tools inherit', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    const { env } = routerEnv(on)
+    await $.session.start?.(START as never)
+    expect(env.NEXUS_ROUTER_TOKEN).toBeUndefined()
+    expect((await $.command.run({ command: 'provider-nexus', args: 'status' } as never)).text).toContain('Claude (subscription)')
+  })
+
+  test('the link survives a reload: status still works with the token gone from the env', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    const { env, calls } = routerEnv(on)
+    await $.session.start?.(START as never)
+    await $.session.start?.(START as never)
+    expect(env.NEXUS_ROUTER_TOKEN).toBeUndefined()
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    expect(calls.at(-1)?.headers['x-nexus-control']).toBe(CONTROL)
+  })
+
+  test('use sends the profile with its key to the router and names the route', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls, written } = routerEnv(on)
+    await $.session.start?.(START as never)
+    const answer = await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    expect(answer.text).toContain('myhub')
+    const route = calls.find(one => one.url.endsWith('/__nexus/route'))
+    expect(route?.body).toEqual({ route: 'myhub', profile: { hubUrl: MYHUB.hubUrl, apiKey: MYHUB.apiKey, models: MYHUB.models, contextWindow: MYHUB.contextWindow } })
+    expect(written.length).toBeGreaterThan(0)
+    expect(written.join(' ')).not.toContain(MYHUB.apiKey)
+    expect(written.join(' ')).toContain('sk-a…mnop')
+  })
+
+  test('the HUD names the hub while a profile is in use, and the model again after claude', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    routerEnv(on)
+    await $.session.start?.(START as never)
+    const band = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+    await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: band })
+    expect(await ui.find({ type: 'Text', text: /⇄ myhub · antigravity/ })).toBeDefined()
+    await $.command.run({ command: 'provider-nexus', args: 'use claude' } as never)
+    expect(await ui.find({ type: 'Text', text: /⇄ myhub/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('an unknown profile is refused without calling the router', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    const { calls } = routerEnv(on)
+    await $.session.start?.(START as never)
+    expect((await $.command.run({ command: 'provider-nexus', args: 'use nope' } as never)).text).toContain('No profile named nope')
+    expect(calls.some(one => one.url.endsWith('/__nexus/route'))).toBe(false)
+  })
+})
+
+describe('provider in a plain claude session', () => {
+  test('without the launcher the command explains how to start one', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    on('env.get', () => ({ value: undefined }))
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('command.register', (_, e) => ({ value: { command: e.name } }))
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    mock.clock(on)
+    await $.session.start?.(START as never)
+    expect((await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)).text).toContain('claude-nexus')
   })
 })

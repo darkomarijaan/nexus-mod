@@ -9,6 +9,8 @@ import type {
   NexusHud,
   NexusPeer,
   NexusPeerStatus,
+  NexusProviderView,
+  NexusRouterLink,
   NexusShieldAlert,
   NexusSpeed,
   NexusTask,
@@ -33,6 +35,16 @@ import {
   WINDOW_NAMES,
   windowKey,
 } from './lean'
+import {
+  hubBadge,
+  maskKey,
+  needsCompaction,
+  parseProviderArgs,
+  primaryModel,
+  readProfiles,
+  routerLinkFrom,
+  type ProviderProfile,
+} from './provider'
 import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, mayPush, scanCommand, type ShieldHit } from './shield'
@@ -51,7 +63,7 @@ import {
   type Sample,
   trackCall,
 } from './insights'
-import { DESIGN_TOOL, EMPTY_HUD, EMPTY_WORK, IDLE_TURN, IDLE_VERIFY, PANE } from './state'
+import { DESIGN_TOOL, EMPTY_HUD, EMPTY_WORK, IDLE_PROVIDER, IDLE_TURN, IDLE_VERIFY, PANE } from './state'
 import {
   ago,
   applyTaskUpdate,
@@ -125,6 +137,10 @@ const speed = atom({ plugin: 'nexus', key: 'speed' } as const, null as NexusSpee
 const work = atom({ plugin: 'nexus', key: 'work' } as const, EMPTY_WORK)
 // The theme (skin) every drawing reads; /skin-nexus writes it and $.store keeps it.
 const themeName = atom({ plugin: 'nexus', key: 'theme' } as const, 'default')
+// The provider route this session uses, the profiles (keys masked) and the pane's draft.
+const provider = atom({ plugin: 'nexus', key: 'provider' } as const, IDLE_PROVIDER)
+// The router a claude-nexus session runs behind; its control token lives here once the env forgets it.
+const routerLink = atom({ plugin: 'nexus', key: 'routerLink' } as const, null as NexusRouterLink | null)
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -1495,6 +1511,127 @@ async function askQuotaMidTurn($: Engine, what: string, turnId: string): Promise
   }
 }
 
+// ── Provider router: the claude-nexus session's link to its router ───────
+
+const PROVIDERS_KEY = 'providers'
+
+/** The router link: from state, else from the env the launcher set (then taken out of what tools inherit). */
+async function ensureRouterLink($: Engine): Promise<NexusRouterLink | null> {
+  const kept = await read($, routerLink)
+  if (kept !== null) return kept
+  const link = routerLinkFrom(await $.env.get('ANTHROPIC_BASE_URL'), await $.env.get('NEXUS_ROUTER_TOKEN'))
+  if (link === null) return null
+  await update($, routerLink, () => link)
+  await $.env.set('NEXUS_ROUTER_TOKEN', undefined)
+  await update($, provider, now => ({ ...now, linked: true }))
+
+  return link
+}
+
+async function routerCall(
+  $: Engine,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  const link = await read($, routerLink)
+  if (link === null) return { ok: false, status: 0, data: {} }
+  const response = await $.http.fetch(`${link.url}${path}`, {
+    method,
+    headers: { 'x-nexus-control': link.token, 'content-type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+  let data: Record<string, unknown> = {}
+  try {
+    data = JSON.parse(response.text) as Record<string, unknown>
+  } catch {
+    // a body that is not JSON: the status says enough
+  }
+
+  return { ok: response.ok, status: response.status, data }
+}
+
+function summarize(profile: ProviderProfile) {
+  return {
+    name: profile.name,
+    hubUrl: profile.hubUrl,
+    key: maskKey(profile.apiKey),
+    model: primaryModel(profile.models) ?? '',
+    contextWindow: profile.contextWindow,
+    fallback: profile.fallback,
+    isDefault: profile.isDefault,
+  }
+}
+
+async function loadProfiles($: Engine): Promise<ProviderProfile[]> {
+  const list = readProfiles(await $.store.get(PROVIDERS_KEY).catch(() => null))
+  await update($, provider, now => ({ ...now, profiles: list.map(summarize) }))
+
+  return list
+}
+
+async function saveProfiles($: Engine, list: ProviderProfile[]): Promise<void> {
+  await $.store.set(PROVIDERS_KEY, list)
+  await update($, provider, now => ({ ...now, profiles: list.map(summarize) }))
+}
+
+const NOT_LINKED =
+  'This session does not run behind the Nexus router. Start Claude Code with claude-nexus (bin/claude-nexus.cmd in the Nexus folder) to switch providers; plain claude keeps Remote Control.'
+
+const COMPACT_THEN_SWITCH = 'Compact, then switch'
+const SWITCH_ANYWAY = 'Switch anyway'
+const CANCEL = 'Cancel'
+
+/** Points the router at Claude or a profile; the text says what happened. */
+async function useRoute($: Engine, name: string): Promise<string> {
+  if ((await ensureRouterLink($)) === null) return NOT_LINKED
+  if (name === 'claude') {
+    const answer = await routerCall($, 'POST', '/__nexus/route', { route: 'claude' })
+    if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
+    await update($, provider, now => ({ ...now, route: 'claude', model: null }))
+
+    return 'Back on Claude (subscription).'
+  }
+  const profile = (await loadProfiles($)).find(one => one.name === name)
+  if (profile === undefined) return `No profile named ${name}. /provider-nexus opens the list.`
+  const tokens = (await read($, hud)).tokens
+  if (needsCompaction(tokens, profile.contextWindow, 0.8)) {
+    const choice = await $.ui
+      .ask(`The context (${tokens ?? 0} tokens) is past 80% of ${profile.name}'s window (${profile.contextWindow}). Compact first?`, {
+        header: 'Provider',
+        options: [COMPACT_THEN_SWITCH, SWITCH_ANYWAY, CANCEL],
+      })
+      .catch(() => CANCEL)
+    if (choice === CANCEL) return 'Not switched.'
+    if (choice === COMPACT_THEN_SWITCH) await $.session.compact({ instructions: 'Keep file paths, open tasks and decisions.' }).catch(() => undefined)
+  }
+  const answer = await routerCall($, 'POST', '/__nexus/route', {
+    route: profile.name,
+    profile: { hubUrl: profile.hubUrl, apiKey: profile.apiKey, models: profile.models, contextWindow: profile.contextWindow },
+  })
+  if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
+  const model = primaryModel(profile.models) ?? null
+  await update($, provider, now => ({ ...now, route: profile.name, model }))
+
+  return `Now on ${profile.name}${model === null ? '' : ` (${model})`}. Requests go to ${profile.hubUrl}; /provider-nexus use claude goes back.`
+}
+
+async function providerStatus($: Engine): Promise<string> {
+  if ((await ensureRouterLink($)) === null) return NOT_LINKED
+  const answer = await routerCall($, 'GET', '/__nexus/status')
+  if (!answer.ok) return 'The router did not answer. Is this session still running under claude-nexus?'
+  const route = String(answer.data.route ?? 'claude')
+  const model = typeof answer.data.model === 'string' ? answer.data.model : null
+  await update($, provider, now => ({ ...now, route, model }))
+  const counts = answer.data.counts as { claude?: number; hub?: number } | undefined
+
+  return [
+    `Route: ${route === 'claude' ? 'Claude (subscription)' : hubBadge(route, model)}`,
+    `Requests this session: ${counts?.claude ?? 0} to Claude, ${counts?.hub ?? 0} to hubs`,
+    `Profiles: ${(await loadProfiles($)).map(one => one.name).join(', ') || 'none yet (/provider-nexus to add one)'}`,
+  ].join('\n')
+}
+
 // ═══ 4. Delivery ═════════════════════════════════════════════════════════
 
 function deliveryRules(cfg: NexusConfig): string {
@@ -1643,6 +1780,7 @@ const COMMANDS = [
   { name: 'skin-nexus', description: 'Nexus: change the skin (theme) of the HUD and drawers', argumentHint: '[name | list | reset]', immediate: true },
   { name: 'enhance-nexus', description: 'Nexus: rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box', argumentHint: '<rough prompt>', immediate: true },
   { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
+  { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude>]', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
 ] as const
 
@@ -1700,6 +1838,7 @@ function statusText(cfg: NexusConfig, theme: string): string {
     `  Trim noisy output   ${on(cfg.trimOutput)}`,
     `  Quota guard         ${cfg.quotaGuard === 0 ? 'off' : `at ${cfg.quotaGuard}%`}`,
     `  Turn footer         ${on(cfg.turnFooter)}`,
+    `  Provider router     /provider-nexus  (sessions started with claude-nexus)`,
     `  Context audit       /context-nexus   MCP servers per project: /mcp-nexus${mcpOff.length > 0 ? ` (off here: ${mcpOff.join(', ')})` : ''}`,
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
@@ -1730,6 +1869,8 @@ export const register: Register = (on, options) => {
   // The handoff the previous session left, read once at start (this session overwrites it as it works).
   let previousHandoff: Handoff | null = null
   let lastContextPct = 0
+  // A hub compaction under way, so one window crossing starts only one.
+  let compactingForHub = false
   // A quota window crossed while idle: asked about before the next prompt goes.
   let quotaPending: string | null = null
   // The note a compaction leaves for Claude, until it is delivered.
@@ -1761,6 +1902,8 @@ export const register: Register = (on, options) => {
     if (cfg.checkpoints) void pruneShadow($).catch(() => undefined)
     await loadIdeas($)
     await loadMcpOff($)
+    await loadProfiles($)
+    if ((await ensureRouterLink($)) !== null) void providerStatus($).catch(() => undefined)
     void refreshHud($, true).catch(() => undefined)
     $.clock.every(4000, () => {
       void refreshHud($).catch(() => undefined)
@@ -1815,6 +1958,17 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
+
+  on('command.run', { command: 'provider-nexus' }, async ($, e) => {
+    const parsed = parseProviderArgs(e.args)
+    if (parsed.verb === 'error') return { text: parsed.message }
+    if (parsed.verb === 'status') return { text: await providerStatus($) }
+    if (parsed.verb === 'use') return { text: await useRoute($, parsed.name) }
+    await loadProfiles($)
+    await openPane($, PANE.provider, 'Providers')
+
+    return {}
+  })
 
   // ── MCP servers turned off in this project: a one-line note behind ToolSearch ─
   on('tool.describe', async ($, e, next) => {
@@ -2021,6 +2175,20 @@ export const register: Register = (on, options) => {
         percent: context.percent ?? now.percent,
         at,
       }))
+      // On a hub, compact before the profile's own window fills.
+      const view = await read($, provider)
+      if (view.route !== 'claude' && !compactingForHub) {
+        const profile = view.profiles.find(one => one.name === view.route)
+        if (profile !== undefined && needsCompaction(context.tokens ?? null, profile.contextWindow, 0.85)) {
+          compactingForHub = true
+          void $.session
+            .compact({ instructions: 'Keep file paths, open tasks, check results and decisions.' })
+            .catch(() => undefined)
+            .finally(() => {
+              compactingForHub = false
+            })
+        }
+      }
       // Quota guard: once per window, ask mid-turn; idle, ask before the next prompt
       if (cfg.quotaGuard > 0 && e.changed.includes('rateLimits')) {
         void (async () => {
@@ -2325,7 +2493,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [now, t, v, cps, working, list, rate, skin] = await Promise.all([
+    const [now, t, v, cps, working, list, rate, skin, route] = await Promise.all([
       read($, hud),
       read($, turn),
       read($, verify),
@@ -2334,6 +2502,7 @@ export const register: Register = (on, options) => {
       read($, tasks),
       read($, speed),
       read($, themeName),
+      read($, provider),
     ])
     const th = themeOf(skin)
     const ic = th.icons
@@ -2381,7 +2550,11 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row">
           <Text wrap="truncate-end">
             <Text color={th.accent}>{ic.branch} {now.branch ?? 'no git'}</Text>
-            {now.model !== '' && <Text> · {ic.model} {now.model}</Text>}
+            {route.route !== 'claude' ? (
+              <Text color={tint('magenta')}> · {hubBadge(route.route, route.model)}</Text>
+            ) : (
+              now.model !== '' && <Text> · {ic.model} {now.model}</Text>
+            )}
             <Text dimColor> · </Text>
             <Text color={th.ok}>{ic.dot} {counts.working}{isWide ? ' working' : ''} </Text>
             <Text color={th.warn}> {ic.dot} {counts.waiting}{isWide ? ' waiting' : ''} </Text>

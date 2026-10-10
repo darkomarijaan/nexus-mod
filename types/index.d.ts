@@ -95,6 +95,35 @@ export type NexusDesign = {
   options: NexusDesignOption[]
 }
 
+/** One provider profile as the pane shows it: the key masked, never whole. */
+export type NexusProviderSummary = {
+  name: string
+  hubUrl: string
+  key: string
+  model: string
+  contextWindow: number
+  fallback: boolean
+  isDefault: boolean
+}
+/** The profile being added or edited in the pane, one field at a time. */
+export type NexusProviderDraft = {
+  step: 'name' | 'hubUrl' | 'apiKey' | 'opus' | 'sonnet' | 'haiku' | 'contextWindow' | 'fallback'
+  editing: string | null
+  values: Record<string, string>
+  models: string[]
+  error: string | null
+}
+export type NexusProviderView = {
+  linked: boolean
+  route: string
+  model: string | null
+  profiles: NexusProviderSummary[]
+  tests: Record<string, string>
+  draft: NexusProviderDraft | null
+}
+/** The router this session runs behind (its control token), kept so a reload finds it. */
+export type NexusRouterLink = { url: string; token: string }
+
 declare module 'claude-code' {
   interface PluginState {
     'nexus': {
@@ -114,6 +143,10 @@ declare module 'claude-code' {
       work: NexusWork
       /** The theme (skin) the HUD and drawers are drawn in. */
       theme: string
+      /** The provider route, profiles (masked) and the pane's draft. */
+      provider: NexusProviderView
+      /** The router this claude-nexus session runs behind; null in a plain session. */
+      routerLink: NexusRouterLink | null
     }
   }
 }
