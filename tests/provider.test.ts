@@ -417,7 +417,9 @@ describe('provider pane', () => {
     const last = JSON.parse(writes.filter(one => one.includes('"draft"')).at(-1) ?? '{}') as { draft: unknown; profiles: { key: string }[] }
     expect(last.draft).toBeNull()
     expect(last.profiles[0]).toMatchObject({ key: 'sk-a…mnop', contextWindow: 200_000, fallback: true, isDefault: true })
-    expect(writes.at(-1)).not.toContain('sk-abcdefghijklmnop')
+    // Not one write to state, at any point of the form, held the key.
+    expect(writes.length).toBeGreaterThan(5)
+    expect(writes.join(' ')).not.toContain('sk-abcdefghijklmnop')
     expect(await drawn(ui)).not.toContain('sk-abcdefghijklmnop')
     await ui.unmount()
   })
@@ -460,6 +462,119 @@ describe('provider pane', () => {
     await ui.press({ key: 'cancel' })
     expect(await ui.find({ key: 'add' })).toBeDefined()
     expect(await drawn(ui)).not.toContain('sk-abcdefghijklmnop')
+    await ui.unmount()
+  })
+
+  test('an edit keeps the stored key on an empty key step, and no state write ever holds a key', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    mock.clock(on)
+    const keys: string[] = []
+    const sent: unknown[] = []
+    on('http.fetch', (_, e) => {
+      keys.push(`${e.url} ${(e.init?.headers ?? {})['x-api-key']}`)
+      if (e.init?.body !== undefined) sent.push(JSON.parse(e.init.body))
+      return { value: { status: 500, ok: false, headers: {}, text: '' } }
+    })
+    const writes: string[] = []
+    on('state.set', (_, e, next) => {
+      writes.push(JSON.stringify(e.value))
+      return next(e)
+    })
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'edit-myhub' })
+    expect((await ui.find({ type: 'Input', key: 'name' }))?.props.value).toBe('myhub')
+    await ui.input({ key: 'name', text: 'myhub' })
+    await ui.input({ key: 'hubUrl', text: MYHUB.hubUrl })
+    // The stored key is offered by its mask only; an empty answer keeps it.
+    expect((await ui.find({ type: 'Input', key: 'apiKey' }))?.props.placeholder).toBe(`keep ${maskKey(MYHUB.apiKey)}: press Enter`)
+    await ui.input({ key: 'apiKey', text: '' })
+    // The model list was asked for with the stored key.
+    expect(keys).toEqual([`${MYHUB.hubUrl}/models ${MYHUB.apiKey}`])
+    await ui.input({ key: 'opus', text: 'new-model' })
+    await ui.input({ key: 'sonnet', text: '' })
+    await ui.input({ key: 'haiku', text: '' })
+    await ui.input({ key: 'contextWindow', text: '500000' })
+    await ui.select({ key: 'fallback', value: 'yes' })
+    await $.command.run({ command: 'provider-nexus', args: 'test myhub' } as never)
+    expect(keys.at(-1)).toBe(`${MYHUB.hubUrl}/messages ${MYHUB.apiKey}`)
+    expect(sent).toEqual([{ model: 'new-model', max_tokens: 16, messages: [{ role: 'user', content: 'Reply with: ok' }] }])
+    expect(writes.length).toBeGreaterThan(5)
+    expect(writes.join(' ')).not.toContain(MYHUB.apiKey)
+    expect(await drawn(ui)).not.toContain(MYHUB.apiKey)
+    await ui.unmount()
+  })
+
+  test('a new key typed on an edit replaces the stored one', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    mock.clock(on)
+    const keys: string[] = []
+    on('http.fetch', (_, e) => {
+      keys.push(String((e.init?.headers ?? {})['x-api-key']))
+      return { value: { status: 500, ok: false, headers: {}, text: '' } }
+    })
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'edit-myhub' })
+    await ui.input({ key: 'name', text: 'myhub' })
+    await ui.input({ key: 'hubUrl', text: MYHUB.hubUrl })
+    await ui.input({ key: 'apiKey', text: 'sk-newnewnewnewnew' })
+    for (const step of ['opus', 'sonnet', 'haiku', 'contextWindow']) await ui.input({ key: step, text: step === 'opus' ? 'm' : '' })
+    await ui.select({ key: 'fallback', value: 'no' })
+    await $.command.run({ command: 'provider-nexus', args: 'test myhub' } as never)
+    expect(keys).toEqual(['sk-newnewnewnewnew', 'sk-newnewnewnewnew'])
+    await ui.unmount()
+  })
+
+  test('opening the pane afresh mid-form drops the draft and the key it held', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    mock.clock(on)
+    on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: '' } }))
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'add' })
+    await ui.input({ key: 'name', text: 'omni' })
+    await ui.input({ key: 'hubUrl', text: 'https://omni.example/v1' })
+    await ui.input({ key: 'apiKey', text: 'sk-abcdefghijklmnop' })
+    // The test's $ cannot close a pane; opening the pane afresh is the other way a form ends.
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    expect(await ui.find({ key: 'add' })).toBeDefined()
+    // A fresh form starts with no key: its empty key step fails validation instead of reusing the old one.
+    await ui.press({ key: 'add' })
+    await ui.input({ key: 'name', text: 'omni' })
+    await ui.input({ key: 'hubUrl', text: 'https://omni.example/v1' })
+    await ui.input({ key: 'apiKey', text: '' })
+    await ui.input({ key: 'opus', text: 'm' })
+    await ui.input({ key: 'sonnet', text: '' })
+    await ui.input({ key: 'haiku', text: '' })
+    await ui.input({ key: 'contextWindow', text: '' })
+    await ui.select({ key: 'fallback', value: 'no' })
+    expect(await ui.find({ type: 'Text', text: /the hub needs a key/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('ten profiles still draw: only the first nine get a digit hotkey', { options: BASE_OPTIONS }, async ($, on) => {
+    const many = Array.from({ length: 10 }, (_, i) => ({ ...MYHUB, name: `p${i + 1}`, isDefault: false }))
+    mock.store(on, { providers: many })
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    routerEnv(on)
+    await $.session.start?.(START as never)
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    expect(await ui.find({ key: 'add' })).toBeDefined()
+    expect((await ui.find({ key: 'use-p9' }))?.props.hotkey).toBe('9')
+    expect(await ui.find({ key: 'use-p10' })).toBeDefined()
+    expect((await ui.find({ key: 'use-p10' }))?.props.hotkey).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /p10/ })).toBeDefined()
     await ui.unmount()
   })
 

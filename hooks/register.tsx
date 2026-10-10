@@ -1672,7 +1672,19 @@ async function fetchHubModels($: Engine, hubUrl: string, apiKey: string): Promis
   }
 }
 
+/**
+ * The hub key being typed in the form. Held here and nowhere else: never in state (what a reload,
+ * the HUD or a peer could read), and the draft keeps only its mask. A reload mid-form loses it.
+ */
+let draftKey: string | null = null
+
+async function closeDraft($: Engine): Promise<void> {
+  draftKey = null
+  await update($, provider, now => (now.draft === null ? now : { ...now, draft: null }))
+}
+
 async function startDraft($: Engine, editing: string | null): Promise<void> {
+  draftKey = null
   const profile = editing === null ? undefined : (await loadProfiles($)).find(one => one.name === editing)
   const values: Record<string, string> =
     profile === undefined
@@ -1680,7 +1692,7 @@ async function startDraft($: Engine, editing: string | null): Promise<void> {
       : {
           name: profile.name,
           hubUrl: profile.hubUrl,
-          apiKey: profile.apiKey,
+          apiKeyMask: maskKey(profile.apiKey),
           opus: profile.models.opus ?? '',
           sonnet: profile.models.sonnet ?? '',
           haiku: profile.models.haiku ?? '',
@@ -1694,9 +1706,17 @@ async function submitDraftField($: Engine, value: string): Promise<void> {
   const view = await read($, provider)
   const draft = view.draft
   if (draft === null) return
-  const values = { ...draft.values, [draft.step]: value.trim() }
+  const stored = draft.editing === null ? undefined : (await loadProfiles($)).find(one => one.name === draft.editing)
+  const values = { ...draft.values }
+  if (draft.step === 'apiKey') {
+    // An empty answer keeps the key typed before, or the stored profile's on an edit.
+    if (value.trim() !== '') draftKey = value.trim()
+  } else {
+    values[draft.step] = value.trim()
+  }
+  const key = draftKey ?? stored?.apiKey ?? ''
   let models = draft.models
-  if (draft.step === 'apiKey') models = await fetchHubModels($, values.hubUrl ?? '', values.apiKey ?? '')
+  if (draft.step === 'apiKey') models = await fetchHubModels($, values.hubUrl ?? '', key)
   const step = nextStep(draft.step)
   if (step !== null) {
     await update($, provider, now => ({ ...now, draft: { ...draft, step, values, models, error: null } }))
@@ -1704,7 +1724,7 @@ async function submitDraftField($: Engine, value: string): Promise<void> {
   }
   const all = await loadProfiles($)
   const others = all.filter(one => one.name !== draft.editing)
-  const result = validateProfile(draftToProfile(values), others)
+  const result = validateProfile(draftToProfile({ ...values, apiKey: key }), others)
   if (result.profile === null) {
     const [field, message] = Object.entries(result.errors)[0] ?? ['name', 'check the fields']
     const back = (field === 'models' ? 'opus' : field) as DraftStep
@@ -1714,7 +1734,7 @@ async function submitDraftField($: Engine, value: string): Promise<void> {
   const saved = result.profile
   const list = [...others.map(one => (saved.isDefault ? { ...one, isDefault: false } : one)), saved]
   await saveProfiles($, list)
-  await update($, provider, now => ({ ...now, draft: null }))
+  await closeDraft($)
   $.ui.toast(`Saved ${saved.name} (key ${maskKey(saved.apiKey)}).`)
 }
 
@@ -1722,6 +1742,7 @@ async function testProfile($: Engine, name: string): Promise<string> {
   const profile = (await loadProfiles($)).find(one => one.name === name)
   if (profile === undefined) return `No profile named ${name}.`
   const models = [...new Set(Object.values(profile.models).filter((one): one is string => typeof one === 'string' && one !== ''))]
+  const hideKey = (text: string) => maskSecrets(text).text.split(profile.apiKey).join(maskKey(profile.apiKey))
   const lines: string[] = []
   for (const model of models) {
     const started = await $.clock.now()
@@ -1732,9 +1753,9 @@ async function testProfile($: Engine, name: string): Promise<string> {
         body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply with: ok' }] }),
       })
       const took = (await $.clock.now()) - started
-      lines.push(response.ok ? `✓ ${model}  ${took} ms` : `✗ ${model}  HTTP ${response.status}: ${clip(maskSecrets(response.text).text.split(profile.apiKey).join(maskKey(profile.apiKey)), 160)}`)
+      lines.push(response.ok ? `✓ ${model}  ${took} ms` : `✗ ${model}  HTTP ${response.status}: ${clip(hideKey(response.text), 160)}`)
     } catch (error) {
-      lines.push(`✗ ${model}  ${error instanceof Error ? error.message : String(error)}`)
+      lines.push(`✗ ${model}  ${clip(hideKey(error instanceof Error ? error.message : String(error)), 160)}`)
     }
   }
   const text = lines.join('\n')
@@ -2077,10 +2098,19 @@ export const register: Register = (on, options) => {
     if (parsed.verb === 'status') return { text: await providerStatus($) }
     if (parsed.verb === 'use') return { text: await useRoute($, parsed.name) }
     if (parsed.verb === 'test') return { text: await testProfile($, parsed.name) }
+    await closeDraft($)
     await loadProfiles($)
     await openPane($, PANE.provider, 'Providers')
 
     return {}
+  })
+
+  // Esc or the close mark ends a half-typed form; the key it held goes too.
+  on('ui.close', { id: PANE.provider }, async ($, e, next) => {
+    const result = await next(e)
+    await closeDraft($)
+
+    return result
   })
 
   // ── MCP servers turned off in this project: a one-line note behind ToolSearch ─
@@ -2987,13 +3017,13 @@ export const register: Register = (on, options) => {
               label={label}
               autoFocus
               value={draft.step === 'apiKey' ? '' : (draft.values[draft.step] ?? '')}
-              placeholder={draft.step === 'apiKey' && draft.values.apiKey ? `keep ${maskKey(draft.values.apiKey)}: press Enter` : ''}
-              onSubmit={value => void submitDraftField($, draft.step === 'apiKey' && value.trim() === '' ? (draft.values.apiKey ?? '') : value)}
+              placeholder={draft.step === 'apiKey' && draft.values.apiKeyMask ? `keep ${draft.values.apiKeyMask}: press Enter` : ''}
+              onSubmit={value => void submitDraftField($, value)}
             />
           ) : (
             <Text dimColor>This surface has no text field; add profiles from the terminal.</Text>
           )}
-          <Button key="cancel" plain hotkey="x" label="Cancel" onPress={() => void update($, provider, now => ({ ...now, draft: null }))} />
+          <Button key="cancel" plain hotkey="x" label="Cancel" onPress={() => void closeDraft($)} />
         </Box>
       )
     }
@@ -3015,7 +3045,7 @@ export const register: Register = (on, options) => {
               {one.fallback ? (one.isDefault ? ' · fallback (default)' : ' · fallback') : ''}
             </Text>
             <Box flexDirection="row" columnGap={2}>
-              {view.linked && <Button key={`use-${one.name}`} plain hotkey={String(index + 1)} label="Use" onPress={async () => $.ui.toast(await useRoute($, one.name))} />}
+              {view.linked && <Button key={`use-${one.name}`} plain {...(index < 9 ? { hotkey: String(index + 1) } : {})} label="Use" onPress={async () => $.ui.toast(await useRoute($, one.name))} />}
               <Button key={`test-${one.name}`} plain label="Test" onPress={async () => void (await testProfile($, one.name))} />
               <Button key={`edit-${one.name}`} plain label="Edit" onPress={() => void startDraft($, one.name)} />
               <Button
