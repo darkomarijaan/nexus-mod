@@ -1,5 +1,7 @@
 # Nexus: a Claude Code mod
 
+Version 0.5.0.
+
 An all-in-one workspace suite for Claude Code:
 
 - **HUD bar** above the prompt: git branch, model, the 5-hour limit used with its countdown (`5h: 26% [reset 1h 42m]`), the weekly limit used with its reset day (`Wk: 38% [Mon]`), context tokens, output speed (`⚡ 58 tok/s`), prompt-cache hits (`◎ cache 92%`), a red warning when a reply was cut off (`⚠ reply cut off: hit max tokens`), and a status light for every Claude Code session on the machine (green working, yellow waiting, gray idle).
@@ -20,6 +22,7 @@ An all-in-one workspace suite for Claude Code:
 - **Trimmed noisy output**: long install, build, test and log output reaches Claude with its routine lines folded (problems, head and tail kept); the whole output is saved to a file Claude can read.
 - **Quota guard**: when the 5-hour or weekly limit passes 90% (configurable), Nexus asks whether the running turn goes on, or, between turns, whether your next prompt goes; once per window.
 - **Turn footer**: a dim line under each answer, `⏱ 3m 12s · 14 tools · 4 files · ctx 42% · checks ✓`.
+- **Provider router**: start Claude Code with `claude-nexus` and switch the session between your Claude subscription and your own hub (URL, API key, models for opus/sonnet/haiku) without a restart. When Claude's plan limit is hit, Nexus offers to continue the same turn on a hub, and offers Claude again once the quota resets. Plain `claude` is untouched and keeps Remote Control; a `claude-nexus` session has no Remote Control (Claude Code turns it off whenever `ANTHROPIC_BASE_URL` is set).
 - **Session handoff**: what each session did is saved; the next session in the project shows it, and `/handoff-nexus` hands it to Claude.
 - **Loop detector**: when the same call fails 3 times (or repeats 6 times) Claude is told to change approach; a turn past 20 minutes is flagged.
 - **Cache freshness**: `warm 2m`, `idle 12m` or `cold` beside the cache hits, so you know whether the next reply starts cold.
@@ -76,6 +79,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `/context-nexus` | Where the context goes before you type, and what could go |
 | `/mcp-nexus` | MCP servers in this project; `/mcp-nexus off <server>`, `/mcp-nexus on <server>` |
 | `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
+| `/provider-nexus` | Provider profiles: add, edit, test, use. Also `/provider-nexus use <name|claude>`, `/provider-nexus status`, `/provider-nexus test <name>` |
 
 **Keys:** press `ctrl+x tab` to focus the bar above the prompt, then one letter:
 
@@ -93,6 +97,14 @@ claude --plugin-dir C:\path\to\nexus-mod
 So `ctrl+x tab s` opens Sessions, `ctrl+x tab i` the idea pad, `ctrl+x tab z` rolls back. Press `ctrl+x`, let go, then `tab`: `ctrl+x` alone shows nothing. In VS Code's terminal, turn on `terminal.integrated.sendKeybindingsToShell` if `ctrl+x tab` does not reach Claude Code. Every key also has a command (`/enhance-nexus`, `/sessions-nexus`, `/idea-nexus`, `/rollback-nexus`, `/preview-nexus`, `/skin-nexus`, `/commit-nexus`). A mod cannot take a bare `ctrl+z` or a `ctrl+x s` chord in this Claude Code build, so the keys go through the bar.
 
 The quotas show on a Claude subscription once the first reply of the session arrives; on an API key there are none to show.
+
+## Provider router
+
+1. Start Claude Code through the launcher, from the Nexus folder: `C:\path\to\nexus-mod\bin\claude-nexus.cmd` (Windows) or `/path/to/nexus-mod/bin/claude-nexus` (macOS, Linux). Any `claude` arguments pass through, e.g. `claude-nexus --resume <id>`. Put that `bin` folder on your PATH to type just `claude-nexus`.
+2. `/provider-nexus` → **Add profile**: name, hub URL (the base that ends in `/v1`, e.g. `https://hub.example.com/v1`), API key, then pick the models from the hub's list, the context window and whether to offer it when Claude's quota runs out. **Test** sends one short request per model.
+3. **Use** (or `/provider-nexus use myhub`) switches at the next request; `/provider-nexus use claude` goes back. The HUD shows `⇄ <profile> · <model>` while a hub is in use.
+
+The hub must speak the Anthropic Messages API (`POST <hub URL>/messages`), as OmniRoute, LiteLLM and claude-code-router do. Your claude.ai login stays the credential on the Claude route; the hub key is added by the router only on hub requests, and the login never reaches the hub. Profiles, keys included, live in Nexus's local store. Set `NEXUS_ROUTER_DEBUG=1` before `claude-nexus` to log each request's route and status to `~/.claude/nexus/router-<pid>.log`.
 
 ## Settings
 
@@ -126,6 +138,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Trim noisy output | on | Fold routine lines of long install, build, test and log output |
 | Quota guard | `90` % | Ask before going on past this share of the 5-hour or weekly limit (0: off) |
 | Turn footer | on | Time, tools, files, context and checks under each answer |
+| Provider fallback | `ask` | In a `claude-nexus` session, when Claude's plan limit is hit: `ask`, `auto` (default fallback profile) or `off` |
 
 ## Where it keeps things
 
@@ -135,3 +148,10 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 - Whole outputs of trimmed commands go to `~/.claude/nexus/outputs/` (the last 30).
 - Session handoffs are kept in the plugin's own store, one per project; nothing is written into your project.
 - Sounds use the system's own (`Windows Notify System Generic` and `Windows Exclamation` on Windows). Whether the notification shows as a desktop toast depends on Claude Code's notification channel (`/config`, Notifications).
+
+## Roadmap
+
+- **v0.5** (this version): provider router.
+- **v0.6**: test-tamper guard, evidence check before "done", `/review-nexus`.
+- **v0.7**: hunk-level diff review, plan annotation in the browser.
+- Later: Telegram remote control, session search, worktree cockpit.
