@@ -168,6 +168,13 @@
       "title": "Turn footer",
       "description": "A dim line under each answer: how long the turn took, tools run, files changed, context used and check results.",
       "default": true
+    },
+    "fallbackMode": {
+      "type": "string",
+      "title": "Provider fallback",
+      "description": "In a claude-nexus session, when Claude's plan limit is hit: ask which profile to continue on, switch to the default fallback profile at once, or do nothing.",
+      "options": ["ask", "auto", "off"],
+      "default": "ask"
     }
   }
 }

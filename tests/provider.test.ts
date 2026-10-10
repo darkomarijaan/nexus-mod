@@ -139,7 +139,8 @@ const BASE_OPTIONS = {
 const START = { cwd: 'C:/app', surface: 'terminal', isInteractive: true }
 const CONTROL = 'c'.repeat(64)
 
-function routerEnv(on: On) {
+/** `events`: what the router's event poll answers, one batch per call; once they are served it refuses, so the watcher backs off instead of spinning. */
+function routerEnv(on: On, events: unknown[][] = []) {
   const env: Record<string, string | undefined> = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:51234', NEXUS_ROUTER_TOKEN: CONTROL }
   on('env.get', (_, e) => ({ value: env[e.name] }))
   on('env.set', (_, e) => {
@@ -155,7 +156,13 @@ function routerEnv(on: On) {
     if (e.url.endsWith('/__nexus/route') && net.routeStatus !== 200) {
       return { value: { status: net.routeStatus, ok: false, headers: {}, text: JSON.stringify({ error: 'x' }) } }
     }
-    const data = e.url.endsWith('/__nexus/status') ? { route: 'claude', model: null, counts: { claude: 0, hub: 0 }, held: [] } : e.url.includes('/__nexus/events') ? { events: [] } : { ok: true }
+    // The watcher's long poll: never an instant ok once the script is spent, or it would spin.
+    if (e.url.includes('/__nexus/events')) {
+      const batch = events.shift()
+      if (batch === undefined) return { value: { status: 503, ok: false, headers: {}, text: '' } }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ events: batch }) } }
+    }
+    const data = e.url.endsWith('/__nexus/status') ? { route: 'claude', model: null, counts: { claude: 0, hub: 0 }, held: [] } : { ok: true }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(data) } }
   })
   on('session.root', () => ({ value: 'C:/app' }))
@@ -606,5 +613,140 @@ describe('provider pane', () => {
     expect(answer.text).toContain('✗ antigravity/gemini-3.8-flash-tiered  HTTP 401')
     expect(answer.text).not.toContain(MYHUB.apiKey)
     expect((await $.command.run({ command: 'provider-nexus', args: 'test nope' } as never)).text).toBe('No profile named nope.')
+  })
+})
+
+describe('fallback when Claude quota runs out', () => {
+  const LIMIT = { type: 'limit', id: 'h1', window: 'five_hour', resetsAt: 9_000_000 }
+
+  function limitRouter(on: On) {
+    return routerEnv(on, [[LIMIT]])
+  }
+
+  async function untilDecision(calls: { url: string }[]): Promise<void> {
+    for (let i = 0; i < 400 && !calls.some(one => one.url.endsWith('/__nexus/decision')); i++) await Promise.resolve()
+  }
+
+  test('ask: the person picks the profile, the held request is retried there', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls } = limitRouter(on)
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => ({
+      result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: 'Continue on myhub' } },
+    }))
+    await $.session.start?.(START as never)
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    await untilDecision(calls)
+    const route = calls.find(one => one.url.endsWith('/__nexus/route'))
+    const decision = calls.find(one => one.url.endsWith('/__nexus/decision'))
+    expect((route?.body as { route?: string } | undefined)?.route).toBe('myhub')
+    expect(decision?.body).toEqual({ id: 'h1', action: 'retry' })
+  })
+
+  test('auto: the default fallback profile is used without asking', { options: { ...BASE_OPTIONS, fallbackMode: 'auto' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls } = limitRouter(on)
+    let asked = false
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      asked = true
+      return { result: {} as never }
+    })
+    await $.session.start?.(START as never)
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    await untilDecision(calls)
+    expect((calls.find(one => one.url.endsWith('/__nexus/route'))?.body as { route?: string } | undefined)?.route).toBe('myhub')
+    expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'retry' })
+    expect(asked).toBe(false)
+  })
+
+  test('declining the switch releases the held request', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls } = limitRouter(on)
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => ({
+      result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: "Don't switch" } },
+    }))
+    await $.session.start?.(START as never)
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    await untilDecision(calls)
+    expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'release' })
+    expect(calls.some(one => one.url.endsWith('/__nexus/route'))).toBe(false)
+  })
+
+  test('off: the held request is released at once', { options: { ...BASE_OPTIONS, fallbackMode: 'off' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls } = limitRouter(on)
+    await $.session.start?.(START as never)
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    await untilDecision(calls)
+    expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'release' })
+    expect(calls.some(one => one.url.endsWith('/__nexus/route'))).toBe(false)
+  })
+
+  test('no fallback profile: released, nothing asked', { options: { ...BASE_OPTIONS, fallbackMode: 'ask' } }, async ($, on) => {
+    mock.store(on, { providers: [{ ...MYHUB, fallback: false, isDefault: false }] })
+    const { calls } = limitRouter(on)
+    let asked = false
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      asked = true
+      return { result: {} as never }
+    })
+    await $.session.start?.(START as never)
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    await untilDecision(calls)
+    expect(calls.find(one => one.url.endsWith('/__nexus/decision'))?.body).toEqual({ id: 'h1', action: 'release' })
+    expect(asked).toBe(false)
+  })
+})
+
+describe('back to Claude and the quota guard', () => {
+  const LIMIT = { type: 'limit', id: 'h1', window: 'five_hour', resetsAt: 9_000_000 }
+
+  test('after the reset, a turn end offers Claude again, once', { options: { ...BASE_OPTIONS, fallbackMode: 'auto' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls, clock } = routerEnv(on, [[LIMIT]])
+    const offers: string[] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      offers.push(e.questions[0]?.question ?? '')
+      return { result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: 'Back to Claude' } } }
+    })
+    on('turn.complete', (_, e) => ({ text: e.answer }))
+    const end = { answer: 'Done.', durationMs: 1000, isAborted: false, turnId: 't1', reason: 'answer' } as never
+    await $.session.start?.(START as never)
+    await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    for (let i = 0; i < 400 && !calls.some(one => one.url.endsWith('/__nexus/decision')); i++) await Promise.resolve()
+    // Before the reset time nothing is offered.
+    await $.turn.complete(end)
+    await clock.settle()
+    expect(offers).toEqual([])
+    await clock.advance(9_000_000)
+    await $.turn.complete(end)
+    await clock.settle()
+    expect(offers).toEqual(["Claude's quota has reset. Go back to Claude?"])
+    expect(calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => (one.body as { route: string }).route)).toEqual(['myhub', 'claude'])
+    await $.turn.complete(end)
+    await clock.settle()
+    expect(offers).toHaveLength(1)
+  })
+
+  test('mid-turn, the quota question offers the fallback profile and switches on it', { options: { ...BASE_OPTIONS, quotaGuard: 90 } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { calls, clock } = routerEnv(on)
+    const choices: string[][] = []
+    on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+      choices.push((e.questions[0]?.options ?? []).map(one => one.label))
+      return { result: { questions: e.questions, answers: { [e.questions[0]?.question ?? '']: 'Switch to myhub now' } } }
+    })
+    on('session.measure', (_, e) => ({ changed: e.changed }))
+    on('turn.start', (_, e) => ({ turnId: e.turnId }) as never)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    await $.turn.start({ turnId: 't1' } as never)
+    await $.session.measure({
+      context: { tokens: 1000, window: 1_000_000, percent: 1 },
+      rateLimits: [{ kind: 'five_hour', percentUsed: 95, resetsAt: new Date(3_600_000).toISOString() }],
+      changed: ['rateLimits'],
+    } as never)
+    await clock.settle()
+    expect(choices).toEqual([['Keep going', 'Switch to myhub now', 'Stop this turn']])
+    expect(calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => (one.body as { route: string }).route)).toEqual(['myhub'])
   })
 })

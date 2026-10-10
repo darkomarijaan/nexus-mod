@@ -39,6 +39,7 @@ import {
   type DraftStep,
   DRAFT_STEPS,
   draftToProfile,
+  fallbackChoices,
   hubBadge,
   maskKey,
   needsCompaction,
@@ -1502,13 +1503,16 @@ async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window
 }
 
 /** Mid-turn, asks whether the turn goes on; an answer of stop ends it. */
-async function askQuotaMidTurn($: Engine, what: string, turnId: string): Promise<void> {
+async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo?: string): Promise<void> {
   await setWaiting($, true)
   try {
-    const answer = await $.ui.ask(`⚠ QUOTA: ${what}. Let this turn keep going?`, { header: 'Quota', options: [QUOTA_KEEP, QUOTA_STOP] })
+    const options = switchTo === undefined ? [QUOTA_KEEP, QUOTA_STOP] : [QUOTA_KEEP, `Switch to ${switchTo} now`, QUOTA_STOP]
+    const answer = await $.ui.ask(`⚠ QUOTA: ${what}. Let this turn keep going?`, { header: 'Quota', options })
     if (answer === QUOTA_STOP) {
       await $.turn.abort({ turnId })
       $.ui.toast('Turn stopped to save quota.')
+    } else if (switchTo !== undefined && answer === `Switch to ${switchTo} now`) {
+      $.ui.toast(await useRoute($, switchTo))
     }
   } catch {
     // nobody to ask: the turn goes on
@@ -1645,6 +1649,75 @@ async function providerStatus($: Engine): Promise<string> {
     `Requests this session: ${counts?.claude ?? 0} to Claude, ${counts?.hub ?? 0} to hubs`,
     `Profiles: ${(await loadProfiles($)).map(one => one.name).join(', ') || 'none yet (/provider-nexus to add one)'}`,
   ].join('\n')
+}
+
+// When Claude's quota comes back after a fallback: offered once, at a turn's end.
+let claudeBackAt: number | null = null
+let isWatchingRouter = false
+
+const DONT_SWITCH = "Don't switch"
+const continueOn = (name: string) => `Continue on ${name}`
+
+async function decide($: Engine, id: string, action: 'retry' | 'release'): Promise<void> {
+  await routerCall($, 'POST', '/__nexus/decision', { id, action }).catch(() => undefined)
+}
+
+async function handleRouterEvent($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<void> {
+  if (event.type === 'upstream-error') {
+    $.ui.toast(`The hub ${String(event.route)} answered ${String(event.status)}. /provider-nexus use claude goes back to Claude.`, { timeoutMs: 8000 })
+    return
+  }
+  if (event.type !== 'limit' || typeof event.id !== 'string') return
+  const id = event.id
+  if (typeof event.resetsAt === 'number') claudeBackAt = event.resetsAt
+  const choices = fallbackChoices(await loadProfiles($))
+  if (cfg.fallbackMode === 'off' || choices.length === 0) return decide($, id, 'release')
+  const now = await $.clock.now()
+  const window = event.window === 'seven_day' ? 'weekly' : event.window === 'five_hour' ? '5-hour' : 'plan'
+  const when = typeof event.resetsAt === 'number' ? ` (resets in ${untilReset(event.resetsAt, now)})` : ''
+  let target: string | undefined
+  if (cfg.fallbackMode === 'auto') {
+    target = choices[0]?.name
+  } else {
+    await setWaiting($, true)
+    try {
+      const answer = await $.ui.ask(`Claude's ${window} limit is reached${when}. Continue this turn on a hub?`, {
+        header: 'Provider',
+        options: [...choices.slice(0, 3).map(one => continueOn(one.name)), DONT_SWITCH],
+      })
+      target = choices.find(one => continueOn(one.name) === answer)?.name
+    } catch {
+      target = undefined
+    } finally {
+      await setWaiting($, false)
+    }
+  }
+  if (target === undefined) return decide($, id, 'release')
+  const text = await useRoute($, target)
+  $.ui.toast(text, { timeoutMs: 8000 })
+  await decide($, id, (await read($, provider)).route === target ? 'retry' : 'release')
+}
+
+/** Listens to the router for the session's life; stops once it cannot be reached. */
+async function watchRouter($: Engine, cfg: NexusConfig): Promise<void> {
+  if (isWatchingRouter) return
+  isWatchingRouter = true
+  let failures = 0
+  try {
+    while (failures < 5) {
+      const answer = await routerCall($, 'GET', '/__nexus/events?wait=25').catch(() => ({ ok: false, status: 0, data: {} as Record<string, unknown> }))
+      if (!answer.ok) {
+        failures += 1
+        await $.clock.sleep(2000).catch(() => undefined)
+        continue
+      }
+      failures = 0
+      const events = Array.isArray(answer.data.events) ? (answer.data.events as Record<string, unknown>[]) : []
+      for (const event of events) await handleRouterEvent($, cfg, event).catch(() => undefined)
+    }
+  } finally {
+    isWatchingRouter = false
+  }
 }
 
 const STEP_LABEL: Record<DraftStep, string> = {
@@ -2036,7 +2109,10 @@ export const register: Register = (on, options) => {
     await loadIdeas($)
     await loadMcpOff($)
     await loadProfiles($)
-    if ((await ensureRouterLink($)) !== null) void providerStatus($).catch(() => undefined)
+    if ((await ensureRouterLink($)) !== null) {
+      void providerStatus($).catch(() => undefined)
+      void watchRouter($, cfg).catch(() => undefined)
+    }
     void refreshHud($, true).catch(() => undefined)
     $.clock.every(4000, () => {
       void refreshHud($).catch(() => undefined)
@@ -2093,6 +2169,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
 
   on('command.run', { command: 'provider-nexus' }, async ($, e) => {
+    if ((await ensureRouterLink($)) !== null) void watchRouter($, cfg).catch(() => undefined)
     const parsed = parseProviderArgs(e.args)
     if (parsed.verb === 'error') return { text: parsed.message }
     if (parsed.verb === 'status') return { text: await providerStatus($) }
@@ -2346,7 +2423,9 @@ export const register: Register = (on, options) => {
           if (what === null) return
           const current = await read($, turn)
           if (current.isWorking && current.id !== null) {
-            await askQuotaMidTurn($, what, current.id)
+            const linked = (await read($, routerLink)) !== null
+            const choice = linked ? fallbackChoices(await loadProfiles($))[0]?.name : undefined
+            await askQuotaMidTurn($, what, current.id, choice)
           } else {
             quotaPending = what
             $.ui.toast(`Quota: ${what}.`, { timeoutMs: 10_000 })
@@ -2437,6 +2516,7 @@ export const register: Register = (on, options) => {
     const finished = await read($, turn)
     await update($, turn, now => ({ ...now, isWorking: false, isWaiting: false, tool: null, detail: null }))
     void refreshHud($).catch(() => undefined)
+    let footerResult: typeof result | null = null
     try {
       const files = await Promise.all(finished.changed.map(path => projectPath($, path)))
       const hasChanges = files.length > 0 || finished.hasMutated
@@ -2469,8 +2549,20 @@ export const register: Register = (on, options) => {
           checks: isThisTurn && (v.phase === 'passed' || v.phase === 'failed') ? v.phase : null,
         })
 
-        return { ...result, text: footer }
+        footerResult = { ...result, text: footer }
       }
+      // 10. Claude's quota is back after a fallback: offered once, at the turn's end
+      const view = await read($, provider)
+      if (view.route !== 'claude' && claudeBackAt !== null && (await $.clock.now()) >= claudeBackAt) {
+        claudeBackAt = null
+        void $.ui
+          .ask("Claude's quota has reset. Go back to Claude?", { header: 'Provider', options: ['Back to Claude', `Stay on ${view.route}`] })
+          .then(async answer => {
+            if (answer === 'Back to Claude') $.ui.toast(await useRoute($, 'claude'))
+          })
+          .catch(() => undefined)
+      }
+      if (footerResult !== null) return footerResult
     } catch {
       // the turn is over either way; these are niceties
     }

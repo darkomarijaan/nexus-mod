@@ -31,6 +31,7 @@ export type NexusConfig = {
   trimOutput: boolean
   quotaGuard: number
   turnFooter: boolean
+  fallbackMode: 'ask' | 'auto' | 'off'
 }
 
 const flag = (value: unknown, fallback: boolean) =>
@@ -45,6 +46,7 @@ const text = (value: unknown, fallback: string) =>
 export function readConfig(options: PluginOptions): NexusConfig {
   const audit = text(options.assumptionAudit, 'plan')
   const theme = text(options.theme, DEFAULT_THEME).trim().toLowerCase()
+  const fallback = text(options.fallbackMode, 'ask')
 
   return {
     shield: flag(options.shield, true),
@@ -76,5 +78,6 @@ export function readConfig(options: PluginOptions): NexusConfig {
     trimOutput: flag(options.trimOutput, true),
     quotaGuard: Math.min(100, Math.floor(count(options.quotaGuard, 90))),
     turnFooter: flag(options.turnFooter, true),
+    fallbackMode: fallback === 'auto' || fallback === 'off' ? fallback : 'ask',
   }
 }
