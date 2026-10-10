@@ -34,6 +34,11 @@ export type Theme = {
   bar: readonly [string, string]
   border: 'round' | 'single' | 'double' | 'bold' | 'classic'
   icons: ThemeIcons
+  /**
+   * The Claude Code theme the skin pairs with: `dark` or `ansi` in the
+   * person's own variant (daltonized kept), or null to leave the person's own.
+   */
+  claudeTheme: 'dark' | 'ansi' | null
 }
 
 const UNICODE: ThemeIcons = {
@@ -75,6 +80,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['▰', '▱'],
     border: 'round',
     icons: UNICODE,
+    claudeTheme: null,
   },
   {
     name: 'claude',
@@ -88,6 +94,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['█', '░'],
     border: 'round',
     icons: UNICODE,
+    claudeTheme: null,
   },
   {
     name: 'dracula',
@@ -101,6 +108,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['▰', '▱'],
     border: 'round',
     icons: UNICODE,
+    claudeTheme: 'dark',
   },
   {
     name: 'nord',
@@ -114,6 +122,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['■', '□'],
     border: 'single',
     icons: UNICODE,
+    claudeTheme: 'dark',
   },
   {
     name: 'ocean',
@@ -127,6 +136,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['▮', '▯'],
     border: 'round',
     icons: UNICODE,
+    claudeTheme: 'dark',
   },
   {
     name: 'sunset',
@@ -140,6 +150,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['━', '─'],
     border: 'bold',
     icons: UNICODE,
+    claudeTheme: 'dark',
   },
   {
     name: 'forest',
@@ -153,6 +164,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['●', '○'],
     border: 'round',
     icons: UNICODE,
+    claudeTheme: 'dark',
   },
   {
     name: 'mono',
@@ -166,6 +178,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['█', '░'],
     border: 'single',
     icons: UNICODE,
+    claudeTheme: 'dark',
   },
   {
     name: 'ascii',
@@ -179,6 +192,7 @@ export const THEMES: readonly Theme[] = [
     bar: ['#', '-'],
     border: 'classic',
     icons: ASCII,
+    claudeTheme: 'ansi',
   },
 ]
 
@@ -226,6 +240,24 @@ export function themedBar(percent: number, theme: Theme, cells = 10): string {
   const full = Math.max(0, Math.min(cells, Math.round((percent / 100) * cells)))
 
   return theme.bar[0].repeat(full) + theme.bar[1].repeat(cells - full)
+}
+
+/**
+ * The Claude Code theme value a skin asks for, given the person's own theme
+ * (`dark`, `light-daltonized`, ...): a dark skin keeps the daltonized
+ * variant, an ANSI one keeps light or dark; null leaves it as it is.
+ */
+export function claudeThemeFor(theme: Theme, own: string): string {
+  const isLight = own.startsWith('light')
+  const isDaltonized = own.includes('daltonized')
+  switch (theme.claudeTheme) {
+    case 'dark':
+      return isDaltonized ? 'dark-daltonized' : 'dark'
+    case 'ansi':
+      return isLight ? 'light-ansi' : 'dark-ansi'
+    default:
+      return own
+  }
 }
 
 /** Text for `/skin-nexus list`: every theme, the current one marked. */

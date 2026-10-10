@@ -1,3 +1,4 @@
+import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { paint, THEMES, themedBar, themeListText, themeOf } from '../hooks/theme'
@@ -69,5 +70,42 @@ describe('/skin-nexus', () => {
     await $.command.run({ command: 'skin-nexus', args: 'sunset' } as never)
     const answer = await $.command.run({ command: 'skin-nexus', args: 'reset' } as never)
     expect(answer.text).toContain('nord')
+  })
+})
+
+describe("Claude Code's theme follows the skin", () => {
+  const follow = (on: On, start: string) => {
+    let current = start
+    const sets: string[] = []
+    mock.store(on)
+    on('config.list', () => ({
+      value: [{ key: 'theme', label: 'Theme', kind: 'choice', value: current, options: ['dark', 'light', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi'], provider: { plugin: 'engine', tier: 'core' }, isLocked: false }],
+    }) as never)
+    on('config.set', (_, e) => {
+      current = String(e.value)
+      sets.push(current)
+      return { value: e.value }
+    })
+    return sets
+  }
+
+  test('a dark skin keeps daltonized, and default puts the person\'s own back', { options: QUIET }, async ($, on) => {
+    const sets = follow(on, 'light-daltonized')
+    await $.command.run({ command: 'skin-nexus', args: 'nord' } as never)
+    await $.command.run({ command: 'skin-nexus', args: 'forest' } as never)
+    await $.command.run({ command: 'skin-nexus', args: 'default' } as never)
+    expect(sets).toEqual(['dark-daltonized', 'light-daltonized'])
+  })
+
+  test('ascii keeps light or dark in ANSI colors', { options: QUIET }, async ($, on) => {
+    const sets = follow(on, 'light')
+    await $.command.run({ command: 'skin-nexus', args: 'ascii' } as never)
+    expect(sets).toEqual(['light-ansi'])
+  })
+
+  test('off, Claude Code\'s theme is left alone', { options: { ...QUIET, syncClaudeTheme: false } }, async ($, on) => {
+    const sets = follow(on, 'light')
+    await $.command.run({ command: 'skin-nexus', args: 'dracula' } as never)
+    expect(sets).toEqual([])
   })
 })

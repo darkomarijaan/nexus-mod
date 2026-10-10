@@ -27,6 +27,7 @@ export type NexusConfig = {
   suggestNext: boolean
   commitHelper: boolean
   theme: string
+  syncClaudeTheme: boolean
 }
 
 const flag = (value: unknown, fallback: boolean) =>
@@ -68,5 +69,6 @@ export function readConfig(options: PluginOptions): NexusConfig {
     suggestNext: flag(options.suggestNext, true),
     commitHelper: flag(options.commitHelper, true),
     theme: isTheme(theme) ? theme : DEFAULT_THEME,
+    syncClaudeTheme: flag(options.syncClaudeTheme, true),
   }
 }

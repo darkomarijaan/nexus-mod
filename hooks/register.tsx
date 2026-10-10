@@ -19,7 +19,7 @@ import type {
 import { type NexusConfig, readConfig } from './config'
 import { comparePage, designPage, isHex, tokensOf } from './design'
 import { maskSecrets } from './secrets'
-import { paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
+import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, scanCommand, type ShieldHit } from './shield'
 import {
   addSample,
@@ -864,14 +864,54 @@ async function storedTheme($: Engine): Promise<string | null> {
   return typeof stored === 'string' && isTheme(stored) ? stored : null
 }
 
-/** Switches the theme now and remembers it; null forgets the pick, back to the configured one. */
-async function setTheme($: Engine, cfg: NexusConfig, name: string | null): Promise<Theme> {
+// The person's own Claude Code theme, kept while a skin has changed it.
+const OWN_CLAUDE_THEME_KEY = 'claudeTheme.own'
+// True while Nexus itself sets Claude Code's theme, so its config.set hook
+// does not take that change for the person's own pick.
+let isSyncingTheme = false
+
+/**
+ * Moves Claude Code's own theme (/theme) to the one the skin pairs with, or
+ * back to the person's own; says why when Claude Code refused the change.
+ */
+async function syncClaudeTheme($: Engine, theme: Theme): Promise<string | undefined> {
+  const row = (await $.config.list().catch(() => [])).find(one => one.key === 'theme')
+  if (row === undefined || typeof row.value !== 'string') return undefined
+  if (row.isLocked) return "Claude Code's theme is locked by policy; only the Nexus skin changed."
+  const stored = await $.store.get(OWN_CLAUDE_THEME_KEY).catch(() => null)
+  const own = typeof stored === 'string' ? stored : row.value
+  const target = claudeThemeFor(theme, own)
+  if (theme.claudeTheme === null) await $.store.delete(OWN_CLAUDE_THEME_KEY).catch(() => undefined)
+  else if (typeof stored !== 'string') await $.store.set(OWN_CLAUDE_THEME_KEY, row.value)
+  if (target === row.value || (row.options !== undefined && !row.options.includes(target))) return undefined
+  isSyncingTheme = true
+  const answer = await $.config
+    .set({ key: 'theme', value: target })
+    .catch(() => ({ deny: 'Claude Code refused it' }))
+    .finally(() => {
+      isSyncingTheme = false
+    })
+
+  return answer.deny === undefined ? undefined : `Claude Code's theme stayed ${row.value}: ${answer.deny}`
+}
+
+/**
+ * Switches the skin now and remembers it, with Claude Code's theme when the
+ * sync is on; null forgets the pick, back to the configured one.
+ */
+async function setTheme($: Engine, cfg: NexusConfig, name: string | null): Promise<{ theme: Theme; note?: string }> {
   const theme = themeOf(name ?? cfg.theme)
   if (name === null) await $.store.delete(THEME_KEY).catch(() => undefined)
   else await $.store.set(THEME_KEY, theme.name)
   await update($, themeName, () => theme.name)
+  const note = cfg.syncClaudeTheme ? await syncClaudeTheme($, theme).catch(() => undefined) : undefined
 
-  return theme
+  return note === undefined ? { theme } : { theme, note }
+}
+
+/** One line for a switch: the skin, and Claude Code's theme note when there is one. */
+function skinText(prefix: string, picked: { theme: Theme; note?: string }): string {
+  return picked.note === undefined ? `${prefix}${picked.theme.name}` : `${prefix}${picked.theme.name}. ${picked.note}`
 }
 
 async function runTheme($: Engine, cfg: NexusConfig, args: string): Promise<string | undefined> {
@@ -882,10 +922,11 @@ async function runTheme($: Engine, cfg: NexusConfig, args: string): Promise<stri
     return undefined
   }
   if (wanted === 'list') return themeListText(await read($, themeName))
-  if (wanted === 'reset') return `Skin back to the configured one: ${(await setTheme($, cfg, null)).name}`
-  if (!isTheme(wanted)) return `No skin named "${wanted}". Skins: ${THEMES.map(theme => theme.name).join(', ')}`
+  if (!isTheme(wanted) && wanted !== 'reset') return `No skin named "${wanted}". Skins: ${THEMES.map(theme => theme.name).join(', ')}`
+  await $.ui.close({ id: PANE.theme }).catch(() => undefined)
+  if (wanted === 'reset') return skinText('Skin back to the configured one: ', await setTheme($, cfg, null))
 
-  return `Skin: ${(await setTheme($, cfg, wanted)).name}`
+  return skinText('Skin: ', await setTheme($, cfg, wanted))
 }
 
 // ── Session handoff ──────────────────────────────────────────────────────
@@ -1365,7 +1406,7 @@ function statusText(cfg: NexusConfig, theme: string): string {
     `  Subagent cap        ${cfg.maxAgents === 0 ? 'none' : cfg.maxAgents}`,
     `  Next-step suggest   ${on(cfg.suggestNext)}`,
     `  Commit helper       ${on(cfg.commitHelper)}  /commit-nexus`,
-    `  Skin                ${theme}  /skin-nexus [name | list | reset]`,
+    `  Skin                ${theme}  /skin-nexus [name | list | reset]${cfg.syncClaudeTheme ? "  (Claude Code's theme follows)" : ''}`,
     '',
     'HUD: branch, model, sessions (green working, yellow waiting, gray idle), running',
     '  subagents; 5h and weekly usage with resets and a red forecast when the pace runs',
@@ -1450,6 +1491,18 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'commit-nexus' }, async $ => ({ text: await runCommit($, cfg) }))
+
+  // The person picking a Claude Code theme while a skin holds it: that pick is
+  // now their own, the one a skin like `default` goes back to.
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const answer = await next(e)
+    if (!isSyncingTheme && answer.deny === undefined && typeof answer.value === 'string') {
+      const stored = await $.store.get(OWN_CLAUDE_THEME_KEY).catch(() => null)
+      if (typeof stored === 'string') await $.store.set(OWN_CLAUDE_THEME_KEY, answer.value).catch(() => undefined)
+    }
+
+    return answer
+  })
 
   on('command.run', { command: 'skin-nexus' }, async ($, e) => {
     const text = await runTheme($, cfg, e.args)
@@ -2143,8 +2196,8 @@ export const register: Register = (on, options) => {
             plain
             {...(index < 9 ? { hotkey: String(index + 1) } : {})}
             onPress={async () => {
-              const picked = await setTheme($, cfg, theme.name)
-              $.ui.toast(`Skin: ${picked.name}`)
+              await $.ui.close({ id: PANE.theme }).catch(() => undefined)
+              $.ui.toast(skinText('Skin: ', await setTheme($, cfg, theme.name)))
             }}
           >
             {theme.name === current.name ? '▸ ' : '  '}
@@ -2156,7 +2209,10 @@ export const register: Register = (on, options) => {
             <Text dimColor>{clip(theme.description, room)}</Text>
           </Button>
         ))}
-        <Text dimColor>1-9 pick (remembered across sessions) · Esc close · /skin-nexus reset for the configured one</Text>
+        <Text dimColor>
+          1-9 pick (remembered across sessions){cfg.syncClaudeTheme ? ", Claude Code's theme follows" : ''} · Esc close · /skin-nexus reset for the
+          configured one
+        </Text>
       </Box>
     )
   })

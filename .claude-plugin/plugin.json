@@ -144,6 +144,12 @@
       "description": "Colors, bars and icons of the HUD and drawers. /skin-nexus switches it on the fly (the pick is remembered across sessions).",
       "options": ["default", "claude", "dracula", "nord", "ocean", "sunset", "forest", "mono", "ascii"],
       "default": "default"
+    },
+    "syncClaudeTheme": {
+      "type": "boolean",
+      "title": "Claude Code theme follows the skin",
+      "description": "A dark skin also moves Claude Code's own theme (/theme) to dark, keeping daltonized; default and claude put your own theme back.",
+      "default": true
     }
   }
 }

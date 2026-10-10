@@ -21,7 +21,7 @@ An all-in-one workspace suite for Claude Code:
 - **Subagent monitor**: running subagents in the HUD and in `/sessions-nexus` with how long each has run, and an optional cap.
 - **Next-step suggestion**: the reply's first Next Step offered as the prompt's dim suggestion; Tab takes it.
 - **Commit helper**: after changes, a `Commit` button and `/commit-nexus` draft a message from the diff and commit once you confirm.
-- **Themes (skins)**: nine looks for the HUD and drawers (colors, bar glyphs, icons, borders): `default`, `claude` (follows Claude Code's own `/theme`), `dracula`, `nord`, `ocean`, `sunset`, `forest`, `mono` and `ascii` (for fonts without Unicode). Switch with `/skin-nexus` (Claude Code's own `/theme` changes Claude Code's colors, not Nexus's); the pick is remembered across sessions.
+- **Themes (skins)**: nine looks for the HUD and drawers (colors, bar glyphs, icons, borders): `default`, `claude` (follows Claude Code's own `/theme`), `dracula`, `nord`, `ocean`, `sunset`, `forest`, `mono` and `ascii` (for fonts without Unicode). Switch with `/skin-nexus`; the pick is remembered across sessions, and Claude Code's own theme follows it (a dark skin moves it to dark, `default` puts yours back).
 
 ## Requirements
 
@@ -114,6 +114,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Next-step suggestion | on | Offer the reply's first Next Step as the prompt suggestion |
 | Commit helper | on | Commit button and `/commit-nexus` |
 | Theme | `default` | Starting theme; a `/skin-nexus` pick overrides it until `/skin-nexus reset` |
+| Claude Code theme follows the skin | on | A dark skin moves Claude Code's own theme to dark (daltonized kept), `ascii` to ANSI; `default` and `claude` put your own theme back |
 
 ## Where it keeps things
 
