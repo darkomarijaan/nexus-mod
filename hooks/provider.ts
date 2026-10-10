@@ -34,11 +34,16 @@ export function normalizeHubUrl(url: string): string {
   return url.trim().replace(/\/+$/, '')
 }
 
+/** A stored or typed value as text; anything that is not a string counts as missing. */
+function text(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function cleanModels(models: ProviderModels | undefined): ProviderModels {
   const out: ProviderModels = {}
   for (const tier of TIERS) {
-    const value = models?.[tier]?.trim()
-    if (value !== undefined && value !== '') out[tier] = value
+    const value = text(models?.[tier])
+    if (value !== '') out[tier] = value
   }
 
   return out
@@ -53,13 +58,13 @@ export function validateProfile(
   others: readonly ProviderProfile[],
 ): { profile: ProviderProfile; errors: null } | { profile: null; errors: Record<string, string> } {
   const errors: Record<string, string> = {}
-  const name = (draft.name ?? '').trim().toLowerCase()
+  const name = text(draft.name).toLowerCase()
   if (name === 'claude') errors.name = 'claude is the subscription route; pick another name'
   else if (!NAME.test(name)) errors.name = 'use 1-32 lowercase letters, digits or dashes'
   else if (others.some(one => one.name === name)) errors.name = `a profile named ${name} already exists`
-  const hubUrl = normalizeHubUrl(draft.hubUrl ?? '')
+  const hubUrl = normalizeHubUrl(text(draft.hubUrl))
   if (!/^https?:\/\/[^\s/]+/.test(hubUrl)) errors.hubUrl = 'an http(s) URL, such as https://hub.example.com/v1'
-  const apiKey = (draft.apiKey ?? '').trim()
+  const apiKey = text(draft.apiKey)
   if (apiKey === '') errors.apiKey = 'the hub needs a key'
   const models = cleanModels(draft.models)
   if (primaryModel(models) === undefined) errors.models = 'fill at least one of the opus, sonnet or haiku models'
@@ -73,16 +78,17 @@ export function validateProfile(
   }
 }
 
-/** The profiles a store holds, broken entries left out. */
+/** The profiles a store holds: broken entries and repeated names left out, the first of a name kept. */
 export function readProfiles(stored: unknown): ProviderProfile[] {
   if (!Array.isArray(stored)) return []
+  const kept: ProviderProfile[] = []
+  for (const one of stored) {
+    if (one === null || typeof one !== 'object') continue
+    const result = validateProfile(one as ProfileDraft, kept)
+    if (result.profile !== null) kept.push(result.profile)
+  }
 
-  return stored.flatMap(one => {
-    if (one === null || typeof one !== 'object') return []
-    const result = validateProfile(one as ProfileDraft, [])
-    const raw = one as ProviderProfile
-    return result.profile === null ? [] : [{ ...result.profile, fallback: raw.fallback === true, isDefault: raw.isDefault === true }]
-  })
+  return kept
 }
 
 export function maskKey(key: string): string {

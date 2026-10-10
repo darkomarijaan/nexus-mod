@@ -56,6 +56,24 @@ describe('provider profiles', () => {
     expect(readProfiles(null)).toEqual([])
   })
 
+  test('a stored entry with a wrong-typed field is left out, never thrown on', () => {
+    expect(readProfiles([{ name: 5 }, { ...MYHUB, models: { opus: 5 } }, MYHUB])).toEqual([MYHUB])
+    expect(validateProfile({ name: 5 as never }, []).errors?.name).toContain('lowercase')
+    expect(validateProfile({ ...MYHUB, hubUrl: 5, apiKey: {} } as never, []).errors).toEqual({
+      hubUrl: 'an http(s) URL, such as https://hub.example.com/v1',
+      apiKey: 'the hub needs a key',
+    })
+  })
+
+  test('the stored list keeps the first of a repeated name', () => {
+    const again = { ...MYHUB, apiKey: 'sk-zyxwvutsrqponm' }
+    expect(readProfiles([MYHUB, again])).toEqual([MYHUB])
+  })
+
+  test('a stored fallback and default flag survive the read', () => {
+    expect(readProfiles([MYHUB])[0]).toMatchObject({ fallback: true, isDefault: true })
+  })
+
   test('the primary model is opus, then sonnet, then haiku', () => {
     expect(primaryModel({ haiku: 'h', sonnet: 's' })).toBe('s')
     expect(primaryModel({})).toBeUndefined()
