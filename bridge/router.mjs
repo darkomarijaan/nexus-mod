@@ -4,6 +4,7 @@
 import { createServer, request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { pipeline } from 'node:stream'
 
 import { claudeHeaders, hostAllowed, hubHeaders, hubModel, hubTarget, isInference, planLimit, routeFor, toHubBody, withSafeToolIds } from './route-core.mjs'
 
@@ -22,13 +23,29 @@ const readAll = stream =>
     stream.on('error', reject)
   })
 
+// Thrown for a body that is not a JSON object; its message is fixed so no body text can leak.
+class BadBody extends Error {}
+
+const parseBody = buffer => {
+  if (buffer.length === 0) return {}
+  let value
+  try {
+    value = JSON.parse(buffer.toString('utf8'))
+  } catch {
+    throw new BadBody('request body is not valid JSON')
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new BadBody('request body is not valid JSON')
+
+  return value
+}
+
 const json = (res, status, value) => {
   if (res.headersSent) return res.destroy()
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(value))
 }
 
 // An error Claude Code reads like the API's own.
-const apiError = (res, status, message) => json(res, status, { type: 'error', error: { type: 'api_error', message: `Nexus router: ${message}` } })
+const apiError = (res, status, message, type = 'api_error') => json(res, status, { type: 'error', error: { type, message: `Nexus router: ${message}` } })
 
 function send(target, method, headers, body, signal) {
   const url = new URL(target)
@@ -52,13 +69,13 @@ function send(target, method, headers, body, signal) {
   })
 }
 
-function pipe(upstream, res, abort) {
+// pipeline ends the client's response, or destroys it, when the upstream dies mid-body.
+function pipe(upstream, res, done) {
   res.writeHead(upstream.statusCode ?? 502, upstream.headers)
-  upstream.pipe(res)
-  res.on('close', () => {
-    if (!res.writableFinished) abort()
-  })
+  pipeline(upstream, res, done)
 }
+
+const failure = error => (error ? (error.code ?? error.name) : undefined)
 
 const validProfile = profile =>
   profile !== null &&
@@ -70,6 +87,10 @@ const validProfile = profile =>
   hubModel('claude-sonnet', profile.models) !== undefined
 
 export async function startRouter({ token, controlToken, anthropic = 'https://api.anthropic.com', holdMs = 120_000, log = () => {}, debug = false }) {
+  for (const secret of [token, controlToken]) {
+    if (typeof secret !== 'string' || secret === '') throw new TypeError('startRouter needs a non-empty token and controlToken')
+  }
+
   const state = { route: 'claude', profile: null, usedHub: false, counts: { claude: 0, hub: 0 } }
   const held = new Map()
   const events = []
@@ -80,69 +101,83 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
     for (const wake of waiters) wake()
   }
 
-  async function toHub(req, res, body) {
+  // One line per request: method, path (no query), route, status, duration, and the error code if any.
+  // Never header or body text.
+  const note = ({ req, started }, route, status, code) =>
+    log(`${req.method} ${req.url.split('?')[0]} -> ${route} ${status} ${Math.round(performance.now() - started)}ms${code === undefined ? '' : ` ${code}`}`)
+
+  async function toHub(ctx, body) {
+    const { req, res, signal } = ctx
     const profile = state.profile
     if (profile === null) return apiError(res, 503, 'no hub profile is active; switch with /provider-nexus')
+    const route = `hub:${state.route}`
     state.counts.hub += 1
     state.usedHub = true
-    const parsed = body.length > 0 ? JSON.parse(body.toString('utf8')) : {}
-    const out = Buffer.from(JSON.stringify(toHubBody(parsed, profile.models)))
-    const abort = new AbortController()
+    const out = Buffer.from(JSON.stringify(toHubBody(parseBody(body), profile.models)))
     let upstream
     try {
-      upstream = await send(hubTarget(profile.hubUrl, req.url), req.method, hubHeaders(req.headers, profile.apiKey), out, abort.signal)
+      upstream = await send(hubTarget(profile.hubUrl, req.url), req.method, hubHeaders(req.headers, profile.apiKey), out, signal)
     } catch (error) {
+      note(ctx, route, 502, failure(error))
+      if (signal.aborted) return
       emit({ type: 'upstream-error', route: state.route, status: 502 })
-      return apiError(res, 502, `the hub "${state.route}" could not be reached (${error.code ?? error.message})`)
+      return apiError(res, 502, `the hub "${state.route}" could not be reached (${error.code ?? 'unknown error'})`)
     }
     if ((upstream.statusCode ?? 502) >= 400) emit({ type: 'upstream-error', route: state.route, status: upstream.statusCode })
-    log(`${req.method} ${req.url} -> hub:${state.route} ${upstream.statusCode}`)
-    pipe(upstream, res, () => abort.abort())
+    pipe(upstream, res, error => note(ctx, route, upstream.statusCode, failure(error)))
   }
 
-  async function toClaude(req, res, body) {
+  async function toClaude(ctx, body) {
+    const { req, res, signal } = ctx
     state.counts.claude += 1
     let payload = body
     if (state.usedHub && body.length > 0 && String(req.headers['content-type'] ?? '').includes('json')) {
-      const parsed = JSON.parse(body.toString('utf8'))
+      const parsed = parseBody(body)
       const safe = withSafeToolIds(parsed)
       if (safe !== parsed) payload = Buffer.from(JSON.stringify(safe))
     }
-    const abort = new AbortController()
     let upstream
     try {
-      upstream = await send(`${anthropic}${req.url}`, req.method, claudeHeaders(req.headers), payload, abort.signal)
+      upstream = await send(`${anthropic}${req.url}`, req.method, claudeHeaders(req.headers), payload, signal)
     } catch (error) {
-      return apiError(res, 502, `api.anthropic.com could not be reached (${error.code ?? error.message})`)
+      note(ctx, 'claude', 502, failure(error))
+      if (signal.aborted) return
+      return apiError(res, 502, `api.anthropic.com could not be reached (${error.code ?? 'unknown error'})`)
     }
     if (debug) {
       const unified = Object.entries(upstream.headers).filter(([name]) => name.startsWith('anthropic-ratelimit-unified-'))
       if (unified.length > 0) log(`unified ${upstream.statusCode} ${unified.map(([name, value]) => `${name}=${value}`).join(' ')}`)
     }
-    log(`${req.method} ${req.url} -> claude ${upstream.statusCode}`)
     const limit = isInference(req.method, req.url) ? planLimit(upstream.statusCode, upstream.headers) : null
-    if (limit === null) return pipe(upstream, res, () => abort.abort())
+    if (limit === null) return pipe(upstream, res, error => note(ctx, 'claude', upstream.statusCode, failure(error)))
 
     // A plan limit: hold the request while Nexus asks where it should go.
-    const rejected = await readAll(upstream)
+    const rejected = await readAll(upstream).catch(() => null)
+    note(ctx, 'claude', upstream.statusCode)
+    if (signal.aborted) return
+    if (rejected === null) return apiError(res, 502, 'api.anthropic.com closed the connection mid-answer')
     const id = randomUUID()
     const decision = await new Promise(resolve => {
-      const timer = setTimeout(() => resolve({ action: 'release' }), holdMs)
-      held.set(id, one => {
+      const settle = one => {
         clearTimeout(timer)
+        signal.removeEventListener('abort', gone)
+        held.delete(id)
         resolve(one)
-      })
+      }
+      const gone = () => settle({ action: 'release' })
+      const timer = setTimeout(gone, holdMs)
+      signal.addEventListener('abort', gone, { once: true })
+      held.set(id, settle)
       emit({ type: 'limit', id, window: limit.window, resetsAt: limit.resetsAt })
     })
-    held.delete(id)
-    if (res.destroyed) return
-    if (decision.action === 'retry' && state.profile !== null && state.route !== 'claude') return toHub(req, res, body)
+    if (signal.aborted) return
+    if (decision.action === 'retry' && state.profile !== null && state.route !== 'claude') return toHub(ctx, body)
     res.writeHead(upstream.statusCode ?? 429, upstream.headers).end(rejected)
   }
 
   async function control(req, res, path) {
     const body = req.method === 'POST' ? await readAll(req) : Buffer.alloc(0)
-    const input = body.length > 0 ? JSON.parse(body.toString('utf8')) : {}
+    const input = parseBody(body)
     const [bare, query = ''] = path.split('?')
     if (req.method === 'GET' && bare === '/__nexus/status') {
       const model = state.route === 'claude' || state.profile === null ? null : hubModel('claude-opus', state.profile.models) ?? null
@@ -183,21 +218,33 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
   }
 
   const server = createServer(async (req, res) => {
+    const started = performance.now()
+    // If the client goes away, whatever this request has open upstream goes with it.
+    const abort = new AbortController()
+    res.on('close', () => {
+      if (!res.writableFinished) abort.abort()
+    })
+    let kind
     try {
       const port = server.address().port
       if (!hostAllowed(req.headers.host, port)) return json(res, 403, { error: 'forbidden' })
-      const kind = routeFor(req.method, req.url, state.route)
+      kind = routeFor(req.method, req.url, state.route)
       if (kind === 'control') {
         if (!same(req.headers['x-nexus-control'], controlToken)) return json(res, 401, { error: 'unauthorized' })
         return await control(req, res, req.url)
       }
       if (!same(req.headers['x-nexus-router'], token)) return json(res, 401, { error: 'unauthorized' })
       const body = await readAll(req)
-      return kind === 'hub' ? await toHub(req, res, body) : await toClaude(req, res, body)
+      const ctx = { req, res, started, signal: abort.signal }
+      return kind === 'hub' ? await toHub(ctx, body) : await toClaude(ctx, body)
     } catch (error) {
-      log(`error ${error.message}`)
-      if (!res.headersSent) apiError(res, 502, error.message)
-      else res.destroy()
+      // Only the kind of error is logged or answered: its message could quote request text.
+      const bad = error instanceof BadBody
+      log(`${req.method} ${req.url.split('?')[0]} -> ${bad ? 'rejected' : 'error'} ${failure(error)}`)
+      if (res.headersSent) res.destroy()
+      else if (!bad) apiError(res, 502, 'internal error')
+      else if (kind === 'control') json(res, 400, { error: error.message })
+      else apiError(res, 400, error.message, 'invalid_request_error')
     }
   })
 
@@ -208,6 +255,7 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
     close: () =>
       new Promise(resolve => {
         for (const decide of held.values()) decide({ action: 'release' })
+        for (const wake of [...waiters]) wake()
         server.closeAllConnections?.()
         server.close(() => resolve())
       }),
