@@ -64,6 +64,23 @@ describe('next-step suggestion', () => {
     expect(nextStepFrom('**Next Steps**\nNone.')).toBeUndefined()
     expect(nextStepFrom('All done, the tests pass.')).toBeUndefined()
   })
+
+  test('Indonesian headings are read too', () => {
+    expect(nextStepFrom('**Yang Berubah**\n- a.ts\n\n**Langkah Berikutnya**\n- Jalankan aplikasinya dan coba halaman login')).toBe(
+      'Jalankan aplikasinya dan coba halaman login',
+    )
+    expect(nextStepFrom('## Langkah selanjutnya\n1. **Tambah** tes untuk `parse`')).toBe('Tambah tes untuk parse')
+    expect(nextStepFrom('Langkah berikut: commit dan push')).toBe('commit dan push')
+    expect(nextStepFrom('## Selanjutnya\n- Uji di terminal VS Code')).toBe('Uji di terminal VS Code')
+    expect(nextStepFrom('**Berikutnya**: rapikan README')).toBe('rapikan README')
+    expect(nextStepFrom('Selanjutnya:\n- Rilis v0.5')).toBe('Rilis v0.5')
+  })
+
+  test('a sentence that only starts with Selanjutnya is not a heading', () => {
+    expect(nextStepFrom('Selanjutnya saya akan menjalankan tes.\nSemua lulus.')).toBeUndefined()
+    expect(nextStepFrom('Berikutnya adalah bagian yang paling sulit.')).toBeUndefined()
+    expect(nextStepFrom('**Langkah Berikutnya**\nTidak ada.')).toBeUndefined()
+  })
 })
 
 describe('loop detector', () => {

@@ -68,14 +68,21 @@ const strip = (line: string) =>
     .trim()
 
 /** The first item under a reply's "Next Steps" heading, as a prompt; none for "None". */
+// "Next steps" and "Langkah berikut(nya) / selanjutnya" lead a list wherever they start a line.
+const NEXT_HEADING = /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?(?:next steps?|langkah (?:berikut(?:nya)?|selanjutnya))(?:\*\*|__)?\s*:?/i
+// A bare "Selanjutnya" or "Berikutnya" also starts prose ("Selanjutnya saya akan..."), so only as a heading or before a colon.
+const NEXT_WORD = /^\s*(?:#{1,6}\s*(?:\*\*|__)?|\*\*|__)?(?:selanjutnya|berikutnya)(?:\*\*|__)?\s*(?::|$)/i
+
 export function nextStepFrom(answer: string): string | undefined {
   const lines = answer.split(/\r?\n/)
-  const at = lines.findIndex(line => /^\s*(?:#{1,6}\s*)?(?:\*\*|__)?next steps?(?:\*\*|__)?\s*:?/i.test(line))
+  const at = lines.findIndex(line => NEXT_HEADING.test(line) || NEXT_WORD.test(line))
   if (at < 0) return undefined
-  const inline = strip((lines[at] ?? '').replace(/^.*?next steps?(?:\*\*|__)?\s*:?/i, ''))
+  const line = lines[at] ?? ''
+  const heading = NEXT_HEADING.exec(line) ?? NEXT_WORD.exec(line)
+  const inline = strip(line.slice(heading?.[0].length ?? line.length))
   const candidates = [inline, ...lines.slice(at + 1).map(strip)]
-  const first = candidates.find(line => line !== '')
-  if (first === undefined || /^none\b/i.test(first) || /^#{1,6}\s/.test(first)) return undefined
+  const first = candidates.find(one => one !== '')
+  if (first === undefined || /^(none|tidak ada|belum ada)\b/i.test(first) || /^#{1,6}\s/.test(first)) return undefined
 
   return clip(first, 200)
 }
