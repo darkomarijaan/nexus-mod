@@ -9,6 +9,8 @@ import type {
   NexusHud,
   NexusPeer,
   NexusPeerStatus,
+  NexusProviderView,
+  NexusRouterLink,
   NexusShieldAlert,
   NexusSpeed,
   NexusTask,
@@ -33,6 +35,23 @@ import {
   WINDOW_NAMES,
   windowKey,
 } from './lean'
+import {
+  type DraftStep,
+  DRAFT_STEPS,
+  draftToProfile,
+  fallbackChoices,
+  hubBadge,
+  maskKey,
+  needsCompaction,
+  nextStep,
+  normalizeHubUrl,
+  parseProviderArgs,
+  primaryModel,
+  readProfiles,
+  routerLinkFrom,
+  type ProviderProfile,
+  validateProfile,
+} from './provider'
 import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, mayPush, scanCommand, type ShieldHit } from './shield'
@@ -51,7 +70,7 @@ import {
   type Sample,
   trackCall,
 } from './insights'
-import { DESIGN_TOOL, EMPTY_HUD, EMPTY_WORK, IDLE_TURN, IDLE_VERIFY, PANE } from './state'
+import { DESIGN_TOOL, EMPTY_HUD, EMPTY_WORK, IDLE_PROVIDER, IDLE_TURN, IDLE_VERIFY, PANE } from './state'
 import {
   ago,
   applyTaskUpdate,
@@ -125,6 +144,14 @@ const speed = atom({ plugin: 'nexus', key: 'speed' } as const, null as NexusSpee
 const work = atom({ plugin: 'nexus', key: 'work' } as const, EMPTY_WORK)
 // The theme (skin) every drawing reads; /skin-nexus writes it and $.store keeps it.
 const themeName = atom({ plugin: 'nexus', key: 'theme' } as const, 'default')
+// The provider route this session uses, the profiles (keys masked) and the pane's draft.
+const provider = atom({ plugin: 'nexus', key: 'provider' } as const, IDLE_PROVIDER)
+// The router a claude-nexus session runs behind; its control token lives here once the env forgets it.
+const routerLink = atom({ plugin: 'nexus', key: 'routerLink' } as const, null as NexusRouterLink | null)
+// The listening loop's generation: a reload starts a newer one, and the older ends at its next turn of the loop.
+const routerWatcher = atom({ plugin: 'nexus', key: 'routerWatcher' } as const, 0)
+// When Claude's limit resets after a fallback, so a turn's end can offer the way back.
+const claudeBackAt = atom({ plugin: 'nexus', key: 'claudeBackAt' } as const, null as number | null)
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -1464,8 +1491,8 @@ const QUOTA_STOP = 'Stop this turn'
 const QUOTA_SEND = 'Send it'
 const QUOTA_HOLD = 'Hold it'
 
-/** The windows that just passed the guard, said plainly; null when none did. Each window is raised once per reset, across sessions. */
-async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window[]): Promise<string | null> {
+/** The windows that just passed the guard, said plainly, and when the last of them resets (null if unknown); null when none did. Each window is raised once per reset, across sessions. */
+async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window[]): Promise<{ text: string; resetsAt: number | null } | null> {
   const stored = await $.store.get('quotaRaised').catch(() => null)
   const raised = new Set(Array.isArray(stored) ? stored.filter((one): one is string => typeof one === 'string') : [])
   const crossed = crossedWindows(limits, cfg.quotaGuard, raised)
@@ -1474,25 +1501,414 @@ async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window
   await $.store.set('quotaRaised', [...raised].slice(-12)).catch(() => undefined)
   const now = await $.clock.now()
 
-  return crossed
-    .map(one => `the ${WINDOW_NAMES[one.kind]} limit is at ${Math.round(one.percentUsed)}%${one.resetsAt === null ? '' : ` (resets in ${untilReset(one.resetsAt, now)})`}`)
-    .join(' and ')
+  const resets = crossed.map(one => one.resetsAt)
+  // Claude is back once every crossed window has reset.
+  const resetsAt = resets.some(one => one === null) ? null : Math.max(...(resets as number[]))
+
+  return {
+    text: crossed
+      .map(one => `the ${WINDOW_NAMES[one.kind]} limit is at ${Math.round(one.percentUsed)}%${one.resetsAt === null ? '' : ` (resets in ${untilReset(one.resetsAt, now)})`}`)
+      .join(' and '),
+    resetsAt,
+  }
 }
 
 /** Mid-turn, asks whether the turn goes on; an answer of stop ends it. */
-async function askQuotaMidTurn($: Engine, what: string, turnId: string): Promise<void> {
+async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo?: string, resetsAt: number | null = null): Promise<void> {
   await setWaiting($, true)
   try {
-    const answer = await $.ui.ask(`⚠ QUOTA: ${what}. Let this turn keep going?`, { header: 'Quota', options: [QUOTA_KEEP, QUOTA_STOP] })
+    const options = switchTo === undefined ? [QUOTA_KEEP, QUOTA_STOP] : [QUOTA_KEEP, `Switch to ${switchTo} now`, QUOTA_STOP]
+    const answer = await $.ui.ask(`⚠ QUOTA: ${what}. Let this turn keep going?`, { header: 'Quota', options })
     if (answer === QUOTA_STOP) {
       await $.turn.abort({ turnId })
       $.ui.toast('Turn stopped to save quota.')
+    } else if (switchTo !== undefined && answer === `Switch to ${switchTo} now`) {
+      $.ui.toast(await useRoute($, switchTo, { askCompact: false }))
+      // Claude comes back when the crossed window resets: the turn's end offers the way back then.
+      if (resetsAt !== null && (await read($, provider)).route === switchTo) await update($, claudeBackAt, () => resetsAt)
     }
   } catch {
     // nobody to ask: the turn goes on
   } finally {
     await setWaiting($, false)
   }
+}
+
+// ── Provider router: the claude-nexus session's link to its router ───────
+
+const PROVIDERS_KEY = 'providers'
+
+// A second copy of the link, for a `/clear` or in-process `/resume` that resets state: the module is not reloaded by either.
+let linkCopy: NexusRouterLink | null = null
+
+/** The router link: from state, else this module's copy, else the env the launcher set (then taken out of what tools inherit). */
+async function ensureRouterLink($: Engine): Promise<NexusRouterLink | null> {
+  const kept = await read($, routerLink)
+  if (kept !== null) {
+    linkCopy = kept
+    return kept
+  }
+  if (linkCopy !== null) {
+    // State lost the link while the router lives on: put it back, and bring the HUD's route in line with the router's.
+    const link = linkCopy
+    await update($, routerLink, () => link)
+    await update($, provider, now => ({ ...now, linked: true }))
+    await providerStatus($).catch(() => undefined)
+
+    return link
+  }
+  const link = routerLinkFrom(await $.env.get('ANTHROPIC_BASE_URL'), await $.env.get('NEXUS_ROUTER_TOKEN'))
+  if (link === null) return null
+  linkCopy = link
+  await update($, routerLink, () => link)
+  await $.env.set('NEXUS_ROUTER_TOKEN', undefined)
+  await update($, provider, now => ({ ...now, linked: true }))
+
+  return link
+}
+
+async function routerCall(
+  $: Engine,
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  const link = await read($, routerLink)
+  if (link === null) return { ok: false, status: 0, data: {} }
+  let response
+  try {
+    response = await $.http.fetch(`${link.url}${path}`, {
+      method,
+      headers: { 'x-nexus-control': link.token, 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    })
+  } catch {
+    // an unreachable router: callers turn status 0 into their own plain sentence
+    return { ok: false, status: 0, data: {} }
+  }
+  let data: Record<string, unknown> = {}
+  try {
+    data = JSON.parse(response.text) as Record<string, unknown>
+  } catch {
+    // a body that is not JSON: the status says enough
+  }
+
+  return { ok: response.ok, status: response.status, data }
+}
+
+function summarize(profile: ProviderProfile) {
+  return {
+    name: profile.name,
+    hubUrl: profile.hubUrl,
+    key: maskKey(profile.apiKey),
+    model: primaryModel(profile.models) ?? '',
+    contextWindow: profile.contextWindow,
+    fallback: profile.fallback,
+    isDefault: profile.isDefault,
+  }
+}
+
+async function loadProfiles($: Engine): Promise<ProviderProfile[]> {
+  const list = readProfiles(await $.store.get(PROVIDERS_KEY).catch(() => null))
+  await update($, provider, now => ({ ...now, profiles: list.map(summarize) }))
+
+  return list
+}
+
+async function saveProfiles($: Engine, list: ProviderProfile[]): Promise<void> {
+  await $.store.set(PROVIDERS_KEY, list)
+  await update($, provider, now => ({ ...now, profiles: list.map(summarize) }))
+}
+
+const NOT_LINKED =
+  'This session does not run behind the Nexus router. Start Claude Code with claude-nexus (bin/claude-nexus.cmd in the Nexus folder) to switch providers; plain claude keeps Remote Control.'
+
+/** After a hub compaction, success or not, the next waits this long. */
+const HUB_COMPACT_COOLDOWN_MS = 60_000
+
+const COMPACT_THEN_SWITCH = 'Compact, then switch'
+const SWITCH_ANYWAY = 'Switch anyway'
+const CANCEL = 'Cancel'
+
+/** Hands a profile, key included, to the router as the route. */
+const postRoute = ($: Engine, profile: ProviderProfile) =>
+  routerCall($, 'POST', '/__nexus/route', {
+    route: profile.name,
+    profile: { hubUrl: profile.hubUrl, apiKey: profile.apiKey, models: profile.models, contextWindow: profile.contextWindow },
+  })
+
+/** Points the router at Claude or a profile; the text says what happened. */
+async function useRoute($: Engine, name: string, options: { askCompact?: boolean } = {}): Promise<string> {
+  if ((await ensureRouterLink($)) === null) return NOT_LINKED
+  if (name === 'claude') {
+    const answer = await routerCall($, 'POST', '/__nexus/route', { route: 'claude' })
+    if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
+    await update($, provider, now => ({ ...now, route: 'claude', model: null }))
+    await update($, claudeBackAt, () => null)
+
+    return 'Back on Claude (subscription).'
+  }
+  const profile = (await loadProfiles($)).find(one => one.name === name)
+  if (profile === undefined) return `No profile named ${name}. /provider-nexus opens the list.`
+  const tokens = (await read($, hud)).tokens
+  // Asking to compact sends a request to Claude: not while Claude's limit holds one.
+  if (options.askCompact !== false && needsCompaction(tokens, profile.contextWindow, 0.8)) {
+    const choice = await $.ui
+      .ask(`The context (${tokens ?? 0} tokens) is past 80% of ${profile.name}'s window (${profile.contextWindow}). Compact first?`, {
+        header: 'Provider',
+        options: [COMPACT_THEN_SWITCH, SWITCH_ANYWAY, CANCEL],
+      })
+      .catch(() => CANCEL)
+    if (choice === CANCEL) return 'Not switched.'
+    if (choice === COMPACT_THEN_SWITCH) await $.session.compact({ instructions: 'Keep file paths, open tasks and decisions.' }).catch(() => undefined)
+  }
+  const answer = await postRoute($, profile)
+  if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
+  const model = primaryModel(profile.models) ?? null
+  await update($, provider, now => ({ ...now, route: profile.name, model }))
+
+  return `Now on ${profile.name}${model === null ? '' : ` (${model})`}. Requests go to ${profile.hubUrl}; /provider-nexus use claude goes back.`
+}
+
+async function providerStatus($: Engine): Promise<string> {
+  if ((await ensureRouterLink($)) === null) return NOT_LINKED
+  const answer = await routerCall($, 'GET', '/__nexus/status')
+  if (!answer.ok) return 'The router did not answer. Is this session still running under claude-nexus?'
+  const route = String(answer.data.route ?? 'claude')
+  const model = typeof answer.data.model === 'string' ? answer.data.model : null
+  await update($, provider, now => ({ ...now, route, model }))
+  const counts = answer.data.counts as { claude?: number; hub?: number } | undefined
+
+  return [
+    `Route: ${route === 'claude' ? 'Claude (subscription)' : hubBadge(route, model)}`,
+    `Requests this session: ${counts?.claude ?? 0} to Claude, ${counts?.hub ?? 0} to hubs`,
+    `Profiles: ${(await loadProfiles($)).map(one => one.name).join(', ') || 'none yet (/provider-nexus to add one)'}`,
+  ].join('\n')
+}
+
+const DONT_SWITCH = "Don't switch"
+const continueOn = (name: string) => `Continue on ${name}`
+
+async function decide($: Engine, id: string, action: 'retry' | 'release'): Promise<void> {
+  await routerCall($, 'POST', '/__nexus/decision', { id, action }).catch(() => undefined)
+}
+
+/** What becomes of a held request: continue it on a hub (retry) or let Claude's refusal through (release). May throw. */
+async function limitAction($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<'retry' | 'release'> {
+  if (typeof event.resetsAt === 'number') {
+    const resetsAt = event.resetsAt
+    await update($, claudeBackAt, () => resetsAt)
+  }
+  // Already on a hub (the person switched, or a subagent's request was held): nothing to choose.
+  if ((await read($, provider)).route !== 'claude') return 'retry'
+  const choices = fallbackChoices(await loadProfiles($))
+  if (cfg.fallbackMode === 'off' || choices.length === 0) return 'release'
+  const tokens = (await read($, hud)).tokens
+  const now = await $.clock.now()
+  const window = event.window === 'seven_day' ? 'weekly' : event.window === 'five_hour' ? '5-hour' : 'plan'
+  const when = typeof event.resetsAt === 'number' ? ` (resets in ${untilReset(event.resetsAt, now)})` : ''
+  let target: string | undefined
+  if (cfg.fallbackMode === 'auto') {
+    target = choices[0]?.name
+  } else {
+    await setWaiting($, true)
+    try {
+      // A hub whose window is smaller than the context would fail the retried request; say so on its choice.
+      const labelled = choices.slice(0, 3).map(one => ({
+        name: one.name,
+        label: `${continueOn(one.name)}${tokens !== null && tokens > one.contextWindow ? ` — context ${tokens} tokens exceeds its window; this turn will likely fail` : ''}`,
+      }))
+      const answer = await $.ui.ask(`Claude's ${window} limit is reached${when}. Continue this turn on a hub?`, {
+        header: 'Provider',
+        options: [...labelled.map(one => one.label), DONT_SWITCH],
+      })
+      target = labelled.find(one => one.label === answer)?.name
+    } catch {
+      target = undefined
+    } finally {
+      await setWaiting($, false)
+    }
+  }
+  if (target === undefined) return 'release'
+  // The held request waits on this: switch the route only; the compaction ask would itself go to the exhausted Claude.
+  const text = await useRoute($, target, { askCompact: false })
+  $.ui.toast(text, { timeoutMs: 8000 })
+
+  return (await read($, provider)).route === target ? 'retry' : 'release'
+}
+
+async function handleRouterEvent($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<void> {
+  if (event.type === 'upstream-error') {
+    $.ui.toast(`The hub ${String(event.route)} answered ${String(event.status)}. /provider-nexus use claude goes back to Claude.`, { timeoutMs: 8000 })
+    return
+  }
+  if (event.type === 'route' && typeof event.route === 'string') {
+    // Whoever changed the route, the badge says where requests really go.
+    const route = event.route
+    const model = route === 'claude' || typeof event.model !== 'string' ? null : event.model
+    await update($, provider, now => ({ ...now, route, model }))
+    return
+  }
+  if (event.type !== 'limit' || typeof event.id !== 'string') return
+  let action: 'retry' | 'release' = 'release'
+  try {
+    action = await limitAction($, cfg, event)
+  } catch {
+    // whatever went wrong, the held request must not wait out its timeout
+    action = 'release'
+  }
+  await decide($, event.id, action)
+}
+
+/**
+ * Listens to the router for the session's life. Each start takes over: it writes a newer generation and an older
+ * loop (from before a reload) ends at its next turn. Without `isTakeover` a loop is only started when none ever was.
+ * An unreachable router is polled again after a growing pause (2 s up to 30 s), never given up on.
+ */
+async function watchRouter($: Engine, cfg: NexusConfig, isTakeover: boolean): Promise<void> {
+  if (!isTakeover && (await read($, routerWatcher)) !== 0) return
+  const mine = await update($, routerWatcher, now => now + 1)
+  let failures = 0
+  try {
+    while ((await read($, routerWatcher)) === mine) {
+      const answer = await routerCall($, 'GET', '/__nexus/events?wait=25').catch(() => ({ ok: false, status: 0, data: {} as Record<string, unknown> }))
+      if (!answer.ok) {
+        failures += 1
+        await $.clock.sleep(Math.min(30_000, 2000 * 2 ** (failures - 1)))
+        continue
+      }
+      failures = 0
+      // Events this poll already took are handled even if a newer loop has come: the router will not serve them again.
+      const events = Array.isArray(answer.data.events) ? (answer.data.events as Record<string, unknown>[]) : []
+      for (const event of events) await handleRouterEvent($, cfg, event).catch(() => undefined)
+    }
+  } catch {
+    // a wait that was cut short: this loop ends, and the next start can begin another
+  } finally {
+    await update($, routerWatcher, now => (now === mine ? 0 : now)).catch(() => undefined)
+  }
+}
+
+const STEP_LABEL: Record<DraftStep, string> = {
+  name: 'Name (lowercase, e.g. myhub)',
+  hubUrl: 'Hub URL (e.g. https://hub.example.com/v1)',
+  apiKey: 'API key (shown while you type; masked once saved)',
+  opus: 'Model for opus requests',
+  sonnet: 'Model for sonnet requests (empty: same as the first one filled)',
+  haiku: 'Model for haiku requests (empty: same as the first one filled)',
+  contextWindow: 'Context window in tokens (empty: 200000)',
+  fallback: 'Offer this profile when Claude quota runs out?',
+}
+
+async function fetchHubModels($: Engine, hubUrl: string, apiKey: string): Promise<string[]> {
+  try {
+    const response = await $.http.fetch(`${normalizeHubUrl(hubUrl)}/models`, {
+      headers: { 'x-api-key': apiKey, authorization: `Bearer ${apiKey}` },
+    })
+    if (!response.ok) return []
+    const parsed = JSON.parse(response.text) as { data?: { id?: string }[] }
+
+    return (parsed.data ?? []).map(one => one.id).filter((id): id is string => typeof id === 'string').slice(0, 60)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The hub key being typed in the form. Held here and nowhere else: never in state (what a reload,
+ * the HUD or a peer could read), and the draft keeps only its mask. A reload mid-form loses it.
+ */
+let draftKey: string | null = null
+
+async function closeDraft($: Engine): Promise<void> {
+  draftKey = null
+  await update($, provider, now => (now.draft === null ? now : { ...now, draft: null }))
+}
+
+async function startDraft($: Engine, editing: string | null): Promise<void> {
+  draftKey = null
+  const profile = editing === null ? undefined : (await loadProfiles($)).find(one => one.name === editing)
+  const values: Record<string, string> =
+    profile === undefined
+      ? {}
+      : {
+          name: profile.name,
+          hubUrl: profile.hubUrl,
+          apiKeyMask: maskKey(profile.apiKey),
+          opus: profile.models.opus ?? '',
+          sonnet: profile.models.sonnet ?? '',
+          haiku: profile.models.haiku ?? '',
+          contextWindow: String(profile.contextWindow),
+          fallback: profile.isDefault ? 'yes-default' : profile.fallback ? 'yes' : 'no',
+        }
+  await update($, provider, now => ({ ...now, draft: { step: 'name' as const, editing, values, models: [], error: null } }))
+}
+
+async function submitDraftField($: Engine, value: string): Promise<void> {
+  const view = await read($, provider)
+  const draft = view.draft
+  if (draft === null) return
+  const stored = draft.editing === null ? undefined : (await loadProfiles($)).find(one => one.name === draft.editing)
+  const values = { ...draft.values }
+  if (draft.step === 'apiKey') {
+    // An empty answer keeps the key typed before, or the stored profile's on an edit.
+    if (value.trim() !== '') draftKey = value.trim()
+  } else {
+    values[draft.step] = value.trim()
+  }
+  const key = draftKey ?? stored?.apiKey ?? ''
+  let models = draft.models
+  if (draft.step === 'apiKey') models = await fetchHubModels($, values.hubUrl ?? '', key)
+  const step = nextStep(draft.step)
+  if (step !== null) {
+    await update($, provider, now => ({ ...now, draft: { ...draft, step, values, models, error: null } }))
+    return
+  }
+  const all = await loadProfiles($)
+  const others = all.filter(one => one.name !== draft.editing)
+  const result = validateProfile(draftToProfile({ ...values, apiKey: key }), others)
+  if (result.profile === null) {
+    const [field, message] = Object.entries(result.errors)[0] ?? ['name', 'check the fields']
+    const back = (field === 'models' ? 'opus' : field) as DraftStep
+    await update($, provider, now => ({ ...now, draft: { ...draft, step: back, values, models, error: message } }))
+    return
+  }
+  const saved = result.profile
+  const list = [...others.map(one => (saved.isDefault ? { ...one, isDefault: false } : one)), saved]
+  await saveProfiles($, list)
+  await closeDraft($)
+  // The profile in use was edited: the router still holds the old key, models and URL.
+  if (draft.editing !== null && saved.name === (await read($, provider)).route && (await read($, routerLink)) !== null) {
+    const pushed = await postRoute($, saved)
+    if (!pushed.ok) $.ui.toast(`Saved ${saved.name}, but the router did not take the change: /provider-nexus use ${saved.name} sends it again.`, { timeoutMs: 8000 })
+  }
+  $.ui.toast(`Saved ${saved.name} (key ${maskKey(saved.apiKey)}).`)
+}
+
+async function testProfile($: Engine, name: string): Promise<string> {
+  const profile = (await loadProfiles($)).find(one => one.name === name)
+  if (profile === undefined) return `No profile named ${name}.`
+  const models = [...new Set(Object.values(profile.models).filter((one): one is string => typeof one === 'string' && one !== ''))]
+  const hideKey = (text: string) => maskSecrets(text).text.split(profile.apiKey).join(maskKey(profile.apiKey))
+  const lines: string[] = []
+  for (const model of models) {
+    const started = await $.clock.now()
+    try {
+      const response = await $.http.fetch(`${profile.hubUrl}/messages`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': profile.apiKey, authorization: `Bearer ${profile.apiKey}` },
+        body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply with: ok' }] }),
+      })
+      const took = (await $.clock.now()) - started
+      lines.push(response.ok ? `✓ ${model}  ${took} ms` : `✗ ${model}  HTTP ${response.status}: ${clip(hideKey(response.text), 160)}`)
+    } catch (error) {
+      lines.push(`✗ ${model}  ${clip(hideKey(error instanceof Error ? error.message : String(error)), 160)}`)
+    }
+  }
+  const text = lines.join('\n')
+  await update($, provider, now => ({ ...now, tests: { ...now.tests, [name]: text } }))
+
+  return `${profile.name} (${profile.hubUrl}):\n${text}`
 }
 
 // ═══ 4. Delivery ═════════════════════════════════════════════════════════
@@ -1643,6 +2059,7 @@ const COMMANDS = [
   { name: 'skin-nexus', description: 'Nexus: change the skin (theme) of the HUD and drawers', argumentHint: '[name | list | reset]', immediate: true },
   { name: 'enhance-nexus', description: 'Nexus: rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box', argumentHint: '<rough prompt>', immediate: true },
   { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
+  { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
 ] as const
 
@@ -1700,6 +2117,7 @@ function statusText(cfg: NexusConfig, theme: string): string {
     `  Trim noisy output   ${on(cfg.trimOutput)}`,
     `  Quota guard         ${cfg.quotaGuard === 0 ? 'off' : `at ${cfg.quotaGuard}%`}`,
     `  Turn footer         ${on(cfg.turnFooter)}`,
+    `  Provider router     /provider-nexus  (sessions started with claude-nexus)`,
     `  Context audit       /context-nexus   MCP servers per project: /mcp-nexus${mcpOff.length > 0 ? ` (off here: ${mcpOff.join(', ')})` : ''}`,
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
@@ -1730,6 +2148,9 @@ export const register: Register = (on, options) => {
   // The handoff the previous session left, read once at start (this session overwrites it as it works).
   let previousHandoff: Handoff | null = null
   let lastContextPct = 0
+  // A hub compaction under way, and when the last one ended: one at a time, and not again within a minute.
+  let compactingForHub = false
+  let hubCompactedAt = Number.NEGATIVE_INFINITY
   // A quota window crossed while idle: asked about before the next prompt goes.
   let quotaPending: string | null = null
   // The note a compaction leaves for Claude, until it is delivered.
@@ -1761,6 +2182,11 @@ export const register: Register = (on, options) => {
     if (cfg.checkpoints) void pruneShadow($).catch(() => undefined)
     await loadIdeas($)
     await loadMcpOff($)
+    await loadProfiles($)
+    if ((await ensureRouterLink($)) !== null) {
+      void providerStatus($).catch(() => undefined)
+      void watchRouter($, cfg, true).catch(() => undefined)
+    }
     void refreshHud($, true).catch(() => undefined)
     $.clock.every(4000, () => {
       void refreshHud($).catch(() => undefined)
@@ -1815,6 +2241,28 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
+
+  on('command.run', { command: 'provider-nexus' }, async ($, e) => {
+    if ((await ensureRouterLink($)) !== null) void watchRouter($, cfg, false).catch(() => undefined)
+    const parsed = parseProviderArgs(e.args)
+    if (parsed.verb === 'error') return { text: parsed.message }
+    if (parsed.verb === 'status') return { text: await providerStatus($) }
+    if (parsed.verb === 'use') return { text: await useRoute($, parsed.name) }
+    if (parsed.verb === 'test') return { text: await testProfile($, parsed.name) }
+    await closeDraft($)
+    await loadProfiles($)
+    await openPane($, PANE.provider, 'Providers')
+
+    return {}
+  })
+
+  // Esc or the close mark ends a half-typed form; the key it held goes too.
+  on('ui.close', { id: PANE.provider }, async ($, e, next) => {
+    const result = await next(e)
+    await closeDraft($)
+
+    return result
+  })
 
   // ── MCP servers turned off in this project: a one-line note behind ToolSearch ─
   on('tool.describe', async ($, e, next) => {
@@ -2021,14 +2469,38 @@ export const register: Register = (on, options) => {
         percent: context.percent ?? now.percent,
         at,
       }))
+      // On a hub, compact before the profile's own window fills.
+      const view = await read($, provider)
+      if (view.route !== 'claude' && !compactingForHub && at - hubCompactedAt >= HUB_COMPACT_COOLDOWN_MS) {
+        const profile = view.profiles.find(one => one.name === view.route)
+        if (profile !== undefined && needsCompaction(context.tokens ?? null, profile.contextWindow, 0.85)) {
+          compactingForHub = true
+          void $.session
+            .compact({ instructions: 'Keep file paths, open tasks, check results and decisions.' })
+            .catch(() => undefined)
+            .then(() => $.clock.now())
+            .then(ended => {
+              hubCompactedAt = ended
+            })
+            .catch(() => {
+              hubCompactedAt = at
+            })
+            .finally(() => {
+              compactingForHub = false
+            })
+        }
+      }
       // Quota guard: once per window, ask mid-turn; idle, ask before the next prompt
       if (cfg.quotaGuard > 0 && e.changed.includes('rateLimits')) {
         void (async () => {
-          const what = await crossedQuota($, cfg, limits)
-          if (what === null) return
+          const crossed = await crossedQuota($, cfg, limits)
+          if (crossed === null) return
+          const what = crossed.text
           const current = await read($, turn)
           if (current.isWorking && current.id !== null) {
-            await askQuotaMidTurn($, what, current.id)
+            const onClaude = (await read($, routerLink)) !== null && (await read($, provider)).route === 'claude'
+            const choice = onClaude ? fallbackChoices(await loadProfiles($))[0]?.name : undefined
+            await askQuotaMidTurn($, what, current.id, choice, crossed.resetsAt)
           } else {
             quotaPending = what
             $.ui.toast(`Quota: ${what}.`, { timeoutMs: 10_000 })
@@ -2119,6 +2591,7 @@ export const register: Register = (on, options) => {
     const finished = await read($, turn)
     await update($, turn, now => ({ ...now, isWorking: false, isWaiting: false, tool: null, detail: null }))
     void refreshHud($).catch(() => undefined)
+    let footerResult: typeof result | null = null
     try {
       const files = await Promise.all(finished.changed.map(path => projectPath($, path)))
       const hasChanges = files.length > 0 || finished.hasMutated
@@ -2151,8 +2624,21 @@ export const register: Register = (on, options) => {
           checks: isThisTurn && (v.phase === 'passed' || v.phase === 'failed') ? v.phase : null,
         })
 
-        return { ...result, text: footer }
+        footerResult = { ...result, text: footer }
       }
+      // 10. Claude's quota is back after a fallback: offered once, at the turn's end
+      const view = await read($, provider)
+      const backAt = await read($, claudeBackAt)
+      if (view.route !== 'claude' && backAt !== null && (await $.clock.now()) >= backAt) {
+        await update($, claudeBackAt, () => null)
+        void $.ui
+          .ask("Claude's quota has reset. Go back to Claude?", { header: 'Provider', options: ['Back to Claude', `Stay on ${view.route}`] })
+          .then(async answer => {
+            if (answer === 'Back to Claude') $.ui.toast(await useRoute($, 'claude'))
+          })
+          .catch(() => undefined)
+      }
+      if (footerResult !== null) return footerResult
     } catch {
       // the turn is over either way; these are niceties
     }
@@ -2325,7 +2811,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [now, t, v, cps, working, list, rate, skin] = await Promise.all([
+    const [now, t, v, cps, working, list, rate, skin, route] = await Promise.all([
       read($, hud),
       read($, turn),
       read($, verify),
@@ -2334,6 +2820,7 @@ export const register: Register = (on, options) => {
       read($, tasks),
       read($, speed),
       read($, themeName),
+      read($, provider),
     ])
     const th = themeOf(skin)
     const ic = th.icons
@@ -2381,7 +2868,11 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row">
           <Text wrap="truncate-end">
             <Text color={th.accent}>{ic.branch} {now.branch ?? 'no git'}</Text>
-            {now.model !== '' && <Text> · {ic.model} {now.model}</Text>}
+            {route.route !== 'claude' ? (
+              <Text color={tint('magenta')}> · {hubBadge(route.route, route.model)}</Text>
+            ) : (
+              now.model !== '' && <Text> · {ic.model} {now.model}</Text>
+            )}
             <Text dimColor> · </Text>
             <Text color={th.ok}>{ic.dot} {counts.working}{isWide ? ' working' : ''} </Text>
             <Text color={th.warn}> {ic.dot} {counts.waiting}{isWide ? ' waiting' : ''} </Text>
@@ -2643,6 +3134,102 @@ export const register: Register = (on, options) => {
           1-9 pick (remembered across sessions){cfg.syncClaudeTheme ? ", Claude Code's theme follows" : ''} · Esc close · /skin-nexus reset for the
           configured one
         </Text>
+      </Box>
+    )
+  })
+
+  // Providers: the profiles, the step-by-step form, a connection test.
+  on('ui.render', { component: 'Pane', requestId: PANE.provider }, async ($, e) => {
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const Input = 'Input' in elements ? elements.Input : undefined
+    const Select = 'Select' in elements ? elements.Select : undefined
+    const view = await read($, provider)
+    const draft = view.draft
+
+    if (draft !== null) {
+      const label = STEP_LABEL[draft.step]
+      const isModel = draft.step === 'opus' || draft.step === 'sonnet' || draft.step === 'haiku'
+
+      return (
+        <Box flexDirection="column">
+          <Text bold>
+            {draft.editing === null ? 'New profile' : `Edit ${draft.editing}`} · {DRAFT_STEPS.indexOf(draft.step) + 1}/{DRAFT_STEPS.length}
+          </Text>
+          {draft.error !== null && <Text color="red">{draft.error}</Text>}
+          {draft.step === 'fallback' && Select !== undefined ? (
+            <Select
+              key="fallback"
+              label={label}
+              autoFocus
+              options={[
+                { value: 'no', label: 'No' },
+                { value: 'yes', label: 'Yes' },
+                { value: 'yes-default', label: 'Yes, and make it the default' },
+              ]}
+              value={draft.values.fallback ?? 'no'}
+              onSelect={value => void submitDraftField($, value)}
+            />
+          ) : isModel && draft.models.length > 0 && Select !== undefined ? (
+            <Select
+              key={draft.step}
+              label={label}
+              autoFocus
+              options={[{ value: '', label: '(empty)' }, ...draft.models.map(id => ({ value: id }))]}
+              value={draft.values[draft.step] ?? ''}
+              onSelect={value => void submitDraftField($, value)}
+            />
+          ) : Input !== undefined ? (
+            <Input
+              key={draft.step}
+              label={label}
+              autoFocus
+              value={draft.step === 'apiKey' ? '' : (draft.values[draft.step] ?? '')}
+              placeholder={draft.step === 'apiKey' && draft.values.apiKeyMask ? `keep ${draft.values.apiKeyMask}: press Enter` : ''}
+              onSubmit={value => void submitDraftField($, value)}
+            />
+          ) : (
+            <Text dimColor>This surface has no text field; add profiles from the terminal.</Text>
+          )}
+          <Button key="cancel" plain hotkey="x" label="Cancel" onPress={() => void closeDraft($)} />
+        </Box>
+      )
+    }
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>
+          {view.linked
+            ? `Route: ${view.route === 'claude' ? 'Claude (subscription)' : hubBadge(view.route, view.model)}`
+            : 'Not a claude-nexus session: profiles can be added and tested here, switching needs claude-nexus.'}
+        </Text>
+        {view.linked && view.route !== 'claude' && <Button key="claude" plain hotkey="0" label="Use Claude" onPress={async () => $.ui.toast(await useRoute($, 'claude'))} />}
+        {view.profiles.length === 0 && <Text dimColor>No profiles yet.</Text>}
+        {view.profiles.map((one, index) => (
+          <Box key={`p-${one.name}`} flexDirection="column">
+            <Text>
+              {one.name === view.route ? '● ' : '  '}
+              <Text bold>{one.name}</Text> · {one.model} · {one.key} · {one.contextWindow} tok
+              {one.fallback ? (one.isDefault ? ' · fallback (default)' : ' · fallback') : ''}
+            </Text>
+            <Box flexDirection="row" columnGap={2}>
+              {view.linked && <Button key={`use-${one.name}`} plain {...(index < 9 ? { hotkey: String(index + 1) } : {})} label="Use" onPress={async () => $.ui.toast(await useRoute($, one.name))} />}
+              <Button key={`test-${one.name}`} plain label="Test" onPress={async () => void (await testProfile($, one.name))} />
+              <Button key={`edit-${one.name}`} plain label="Edit" onPress={() => void startDraft($, one.name)} />
+              <Button
+                key={`del-${one.name}`}
+                plain
+                label="Delete"
+                onPress={async () => {
+                  const answer = await $.ui.ask(`Delete the profile ${one.name}?`, { header: 'Provider', options: ['Delete', 'Keep'] }).catch(() => 'Keep')
+                  if (answer === 'Delete') await saveProfiles($, (await loadProfiles($)).filter(profile => profile.name !== one.name))
+                }}
+              />
+            </Box>
+            {view.tests[one.name] !== undefined && <Text dimColor>{view.tests[one.name]}</Text>}
+          </Box>
+        ))}
+        <Button key="add" plain hotkey="a" label="Add profile" onPress={() => void startDraft($, null)} />
       </Box>
     )
   })
