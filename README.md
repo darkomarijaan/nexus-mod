@@ -79,7 +79,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `/context-nexus` | Where the context goes before you type, and what could go |
 | `/mcp-nexus` | MCP servers in this project; `/mcp-nexus off <server>`, `/mcp-nexus on <server>` |
 | `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
-| `/provider-nexus` | Provider profiles: add, edit, test, use. Also `/provider-nexus use <name|claude>`, `/provider-nexus status`, `/provider-nexus test <name>` |
+| `/provider-nexus` | Provider profiles: add, edit, test, use. Also `/provider-nexus use <name\|claude>`, `/provider-nexus status`, `/provider-nexus test <name>` |
 
 **Keys:** press `ctrl+x tab` to focus the bar above the prompt, then one letter:
 
