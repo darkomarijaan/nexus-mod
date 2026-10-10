@@ -14,7 +14,12 @@ An all-in-one workspace suite for Claude Code:
 - **Clean delivery**: a quiet transcript and a plain-English final summary.
 - **Limit forecast**: from how fast 5h and weekly usage climb, a red `⚠ out ~1h 10m` when the pace runs the window out before it resets.
 - **Done / approval alerts**: a desktop notification and a sound when a long turn finishes, a different sound when Claude needs your approval.
-- **Compaction guard**: a warning at 80% context, and compaction told to keep file paths, open tasks, check results and decisions.
+- **Compaction guard**: a warning at 80% context, compaction told to keep file paths, open tasks, check results and decisions, and right after it a note to Claude with your last request word for word, the open tasks, the files touched and the opening of CLAUDE.md.
+- **Context audit**: `/context-nexus` shows where the context goes before you type (MCP servers, CLAUDE.md and other memory files, skills by plugin, agent types) and what could go.
+- **MCP servers per project**: `/mcp-nexus off <server>` keeps a server's tools out of Claude's way in this project (a one-line note behind ToolSearch, calls refused); `/mcp-nexus on <server>` brings it back.
+- **Trimmed noisy output**: long install, build, test and log output reaches Claude with its routine lines folded (problems, head and tail kept); the whole output is saved to a file Claude can read.
+- **Quota guard**: when the 5-hour or weekly limit passes 90% (configurable), Nexus asks whether the running turn goes on, or, between turns, whether your next prompt goes; once per window.
+- **Turn footer**: a dim line under each answer, `⏱ 3m 12s · 14 tools · 4 files · ctx 42% · checks ✓`.
 - **Session handoff**: what each session did is saved; the next session in the project shows it, and `/handoff-nexus` hands it to Claude.
 - **Loop detector**: when the same call fails 3 times (or repeats 6 times) Claude is told to change approach; a turn past 20 minutes is flagged.
 - **Cache freshness**: `warm 2m`, `idle 12m` or `cold` beside the cache hits, so you know whether the next reply starts cold.
@@ -67,6 +72,8 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `/preview-nexus [url]` | Screenshot the dev server; run it again after changes for a before/after comparison |
 | `/handoff-nexus` | What the last session in this project did; Claude reads it too, so it can pick the work up |
 | `/commit-nexus` | Commit every change in the work tree with a drafted message, after you confirm it |
+| `/context-nexus` | Where the context goes before you type, and what could go |
+| `/mcp-nexus` | MCP servers in this project; `/mcp-nexus off <server>`, `/mcp-nexus on <server>` |
 | `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
 
 **Keys:** press `ctrl+x tab` to focus the bar above the prompt, then one letter:
@@ -107,7 +114,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Helper model | `haiku` | Model for Enhance, assumption review and commit messages |
 | Done / approval alerts | on | Notification and sound when a long turn ends or Claude needs you |
 | Alert after | `30` s | Only turns at least this long raise the done alert |
-| Compaction guard | on | 80% warning and what compaction must keep |
+| Compaction guard | on | 80% warning, what compaction must keep, and the note to Claude after it |
 | Session handoff | on | Save each session's summary for the next |
 | Loop detector | on | Break repeated failing calls; flag 20-minute turns |
 | Max subagents at once | `0` | Refuse new subagents past this many (0: no limit) |
@@ -115,11 +122,15 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Commit helper | on | Commit button and `/commit-nexus` |
 | Theme | `default` | Starting theme; a `/skin-nexus` pick overrides it until `/skin-nexus reset` |
 | Claude Code theme follows the skin | on | A dark skin moves Claude Code's own theme to dark (daltonized kept), `ascii` to ANSI; `default` and `claude` put your own theme back |
+| Trim noisy output | on | Fold routine lines of long install, build, test and log output |
+| Quota guard | `90` % | Ask before going on past this share of the 5-hour or weekly limit (0: off) |
+| Turn footer | on | Time, tools, files, context and checks under each answer |
 
 ## Where it keeps things
 
 - Checkpoints live in a private shadow git repo under `~/.claude/nexus/shadow/`. Your project's own `.git` is never touched. The last 40 are kept; older ones are freed at most once a week.
 - Rollback does not cover `node_modules`, `dist`, `build`, `.venv` or other build folders.
 - Previews and screenshots are written to `~/.claude/nexus/previews/`.
+- Whole outputs of trimmed commands go to `~/.claude/nexus/outputs/` (the last 30).
 - Session handoffs are kept in the plugin's own store, one per project; nothing is written into your project.
 - Sounds use the system's own (`Windows Notify System Generic` and `Windows Exclamation` on Windows). Whether the notification shows as a desktop toast depends on Claude Code's notification channel (`/config`, Notifications).

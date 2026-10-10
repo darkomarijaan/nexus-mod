@@ -28,6 +28,9 @@ export type NexusConfig = {
   commitHelper: boolean
   theme: string
   syncClaudeTheme: boolean
+  trimOutput: boolean
+  quotaGuard: number
+  turnFooter: boolean
 }
 
 const flag = (value: unknown, fallback: boolean) =>
@@ -70,5 +73,8 @@ export function readConfig(options: PluginOptions): NexusConfig {
     commitHelper: flag(options.commitHelper, true),
     theme: isTheme(theme) ? theme : DEFAULT_THEME,
     syncClaudeTheme: flag(options.syncClaudeTheme, true),
+    trimOutput: flag(options.trimOutput, true),
+    quotaGuard: Math.min(100, Math.floor(count(options.quotaGuard, 90))),
+    turnFooter: flag(options.turnFooter, true),
   }
 }

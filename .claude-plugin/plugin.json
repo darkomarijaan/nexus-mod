@@ -1,6 +1,6 @@
 {
   "name": "nexus",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "author": {
     "name": "eko"
   },
@@ -105,7 +105,7 @@
     "compactGuard": {
       "type": "boolean",
       "title": "Compaction guard",
-      "description": "Warn at 80% context, and tell compaction to keep file paths, open tasks, check results and decisions.",
+      "description": "Warn at 80% context, tell compaction to keep file paths, open tasks, check results and decisions, and after it remind Claude of your last request word for word, the open tasks and CLAUDE.md.",
       "default": true
     },
     "handoff": {
@@ -149,6 +149,24 @@
       "type": "boolean",
       "title": "Claude Code theme follows the skin",
       "description": "A dark skin also moves Claude Code's own theme (/theme) to dark, keeping daltonized; default and claude put your own theme back.",
+      "default": true
+    },
+    "trimOutput": {
+      "type": "boolean",
+      "title": "Trim noisy output",
+      "description": "Fold the routine lines of long install, build, test and log output before Claude reads it (problems, head and tail kept); the full output is saved to a file Claude can read.",
+      "default": true
+    },
+    "quotaGuard": {
+      "type": "number",
+      "title": "Quota guard (%)",
+      "description": "When the 5-hour or weekly limit passes this share, ask before the turn goes on (once per window). 0: off.",
+      "default": 90
+    },
+    "turnFooter": {
+      "type": "boolean",
+      "title": "Turn footer",
+      "description": "A dim line under each answer: how long the turn took, tools run, files changed, context used and check results.",
       "default": true
     }
   }

@@ -18,6 +18,21 @@ import type {
 } from '../types'
 import { type NexusConfig, readConfig } from './config'
 import { comparePage, designPage, isHex, tokensOf } from './design'
+import {
+  anchorText,
+  contextReport,
+  crossedWindows,
+  footerText,
+  isNoisyCommand,
+  lastRequestIn,
+  mcpServerOf,
+  offDescription,
+  tokens,
+  trimOutput,
+  type Window,
+  WINDOW_NAMES,
+  windowKey,
+} from './lean'
 import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, mayPush, scanCommand, type ShieldHit } from './shield'
@@ -1337,6 +1352,142 @@ function maskBlock(block: ApiContentBlock, found: { count: number; kinds: Set<st
   return block
 }
 
+// ── Lean: noisy output, MCP servers per project, the quota guard ─────────
+
+const OUTPUT_FILES = 30
+
+/** Keeps a command's whole output in a ring of files Claude can Read; the path, or null. */
+async function saveOutput($: Engine, command: string, text: string): Promise<string | null> {
+  try {
+    const stored = await $.store.get('outputs.next')
+    const slot = typeof stored === 'number' ? stored % OUTPUT_FILES : 0
+    await $.store.set('outputs.next', slot + 1)
+    const path = `${await nexusDir($)}/outputs/out-${slot}.log`
+    await $.fs.write(path, `$ ${command}\n\n${text}`)
+
+    return path
+  } catch {
+    return null
+  }
+}
+
+/** A long, routine shell output folded before Claude reads it; the rest of the result untouched. */
+async function trimShellResult<R extends { result?: unknown; isError?: boolean; deny?: string }>($: Engine, command: string, answer: R): Promise<R> {
+  if (answer.deny !== undefined || answer.isError === true || !isNoisyCommand(command)) return answer
+  const out = answer.result as Record<string, unknown> | undefined
+  if (out === undefined || out === null || typeof out.stdout !== 'string') return answer
+  if (out.interrupted === true || out.isImage === true || out.persistedOutputPath !== undefined || out.backgroundTaskId !== undefined) return answer
+  const stdout = trimOutput(out.stdout)
+  const stderr = typeof out.stderr === 'string' ? trimOutput(out.stderr) : undefined
+  if (stdout === undefined && stderr === undefined) return answer
+  const file = await saveOutput($, command, `${out.stdout}${typeof out.stderr === 'string' && out.stderr !== '' ? `\n\n--- stderr ---\n${out.stderr}` : ''}`)
+  const dropped = (stdout?.dropped ?? 0) + (stderr?.dropped ?? 0)
+  const note = `[Nexus folded ${dropped} routine lines of this output${file === null ? '' : `; the full output is at ${file}, Read it if you need a folded part`}]`
+
+  return {
+    ...answer,
+    result: {
+      ...out,
+      stdout: `${stdout?.text ?? out.stdout}\n\n${note}`,
+      ...(stderr === undefined ? {} : { stderr: stderr.text }),
+    },
+  }
+}
+
+// MCP servers turned off in this project; session.start loads them, /mcp-nexus changes them.
+let mcpOff: string[] = []
+
+async function mcpOffKey($: Engine): Promise<string> {
+  return `mcpOff.${await shortHash(await projectRoot($))}`
+}
+
+async function loadMcpOff($: Engine): Promise<void> {
+  const stored = await $.store.get(await mcpOffKey($)).catch(() => null)
+  mcpOff = Array.isArray(stored) ? stored.filter((one): one is string => typeof one === 'string') : []
+}
+
+async function runMcp($: Engine, args: string): Promise<string> {
+  const [verb = 'list', ...rest] = args.trim().split(/\s+/).filter(Boolean)
+  const name = rest.join(' ')
+  const tools = await $.tool.list().catch(() => [])
+  const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
+  const sizes = usage?.context.breakdown?.mcpTools ?? []
+  const servers = new Map<string, { tools: number; tokens: number }>()
+  for (const tool of tools) {
+    const server = mcpServerOf(tool.name)
+    if (server === undefined || server === $.plugin.name) continue
+    const one = servers.get(server) ?? { tools: 0, tokens: 0 }
+    one.tools += 1
+    servers.set(server, one)
+  }
+  for (const size of sizes) {
+    const one = servers.get(size.serverName)
+    if (one !== undefined && size.isLoaded) one.tokens += size.tokens
+  }
+  for (const server of mcpOff) if (!servers.has(server)) servers.set(server, { tools: 0, tokens: 0 })
+  const known = [...servers.keys()]
+
+  if (verb === 'off' || verb === 'on') {
+    if (name === '') return `Name a server: /mcp-nexus ${verb} <server>. Servers: ${known.join(', ') || 'none connected'}.`
+    if (name === $.plugin.name) return 'Nexus keeps its own tools on.'
+    if (verb === 'off' && !servers.has(name)) return `No MCP server "${name}" is connected. Servers: ${known.join(', ') || 'none'}.`
+    mcpOff = verb === 'off' ? [...new Set([...mcpOff, name])] : mcpOff.filter(one => one !== name)
+    await $.store.set(await mcpOffKey($), mcpOff)
+    $.ui.invalidate('tool.describe')
+
+    return verb === 'off'
+      ? `"${name}" is off in this project: its tools wait behind ToolSearch with a one-line note, and a call to one is refused. /mcp-nexus on ${name} brings it back.`
+      : `"${name}" is on again in this project.`
+  }
+  if (verb !== 'list') return 'Use /mcp-nexus (list), /mcp-nexus off <server> or /mcp-nexus on <server>.'
+  if (servers.size === 0) return 'No MCP server is connected to this session.'
+
+  return [
+    'MCP servers in this project (tokens: tools kept in front of Claude):',
+    ...[...servers.entries()]
+      .sort((a, b) => b[1].tokens - a[1].tokens)
+      .map(([server, one]) => `  ${mcpOff.includes(server) ? '○ off' : '● on '}  ${server.padEnd(28)}${String(one.tools).padStart(4)} tools  ${tokens(one.tokens).padStart(6)}`),
+    '',
+    'Turn one off here with /mcp-nexus off <server>; /context-nexus shows where the rest of the context goes.',
+  ].join('\n')
+}
+
+const QUOTA_KEEP = 'Keep going'
+const QUOTA_STOP = 'Stop this turn'
+const QUOTA_SEND = 'Send it'
+const QUOTA_HOLD = 'Hold it'
+
+/** The windows that just passed the guard, said plainly; null when none did. Each window is raised once per reset, across sessions. */
+async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window[]): Promise<string | null> {
+  const stored = await $.store.get('quotaRaised').catch(() => null)
+  const raised = new Set(Array.isArray(stored) ? stored.filter((one): one is string => typeof one === 'string') : [])
+  const crossed = crossedWindows(limits, cfg.quotaGuard, raised)
+  if (crossed.length === 0) return null
+  for (const one of crossed) raised.add(windowKey(one))
+  await $.store.set('quotaRaised', [...raised].slice(-12)).catch(() => undefined)
+  const now = await $.clock.now()
+
+  return crossed
+    .map(one => `the ${WINDOW_NAMES[one.kind]} limit is at ${Math.round(one.percentUsed)}%${one.resetsAt === null ? '' : ` (resets in ${untilReset(one.resetsAt, now)})`}`)
+    .join(' and ')
+}
+
+/** Mid-turn, asks whether the turn goes on; an answer of stop ends it. */
+async function askQuotaMidTurn($: Engine, what: string, turnId: string): Promise<void> {
+  await setWaiting($, true)
+  try {
+    const answer = await $.ui.ask(`⚠ QUOTA: ${what}. Let this turn keep going?`, { header: 'Quota', options: [QUOTA_KEEP, QUOTA_STOP] })
+    if (answer === QUOTA_STOP) {
+      await $.turn.abort({ turnId })
+      $.ui.toast('Turn stopped to save quota.')
+    }
+  } catch {
+    // nobody to ask: the turn goes on
+  } finally {
+    await setWaiting($, false)
+  }
+}
+
 // ═══ 4. Delivery ═════════════════════════════════════════════════════════
 
 function deliveryRules(cfg: NexusConfig): string {
@@ -1483,6 +1634,8 @@ const COMMANDS = [
   { name: 'handoff-nexus', description: 'Nexus: what the last session in this project did, so Claude can pick it up' },
   { name: 'commit-nexus', description: 'Nexus: commit the work tree with a drafted message, after you confirm it' },
   { name: 'skin-nexus', description: 'Nexus: change the skin (theme) of the HUD and drawers', argumentHint: '[name | list | reset]', immediate: true },
+  { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
+  { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
 ] as const
 
 const DESIGN_SCHEMA = {
@@ -1535,7 +1688,11 @@ function statusText(cfg: NexusConfig, theme: string): string {
     `  Executive summary   ${on(cfg.executiveSummary)}`,
     `  Design Lens         ${on(cfg.designLens)}  /preview-nexus [url] [base]`,
     `  Done/approval alert ${on(cfg.notify)}  after turns of ${Math.round(cfg.notifyAfterMs / 1000)}s or more`,
-    `  Compaction guard    ${on(cfg.compactGuard)}`,
+    `  Compaction guard    ${on(cfg.compactGuard)}  reminds Claude of your last request after compaction`,
+    `  Trim noisy output   ${on(cfg.trimOutput)}`,
+    `  Quota guard         ${cfg.quotaGuard === 0 ? 'off' : `at ${cfg.quotaGuard}%`}`,
+    `  Turn footer         ${on(cfg.turnFooter)}`,
+    `  Context audit       /context-nexus   MCP servers per project: /mcp-nexus${mcpOff.length > 0 ? ` (off here: ${mcpOff.join(', ')})` : ''}`,
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
     `  Subagent cap        ${cfg.maxAgents === 0 ? 'none' : cfg.maxAgents}`,
@@ -1564,6 +1721,10 @@ export const register: Register = (on, options) => {
   // The handoff the previous session left, read once at start (this session overwrites it as it works).
   let previousHandoff: Handoff | null = null
   let lastContextPct = 0
+  // A quota window crossed while idle: asked about before the next prompt goes.
+  let quotaPending: string | null = null
+  // The note a compaction leaves for Claude, until it is delivered.
+  let pendingAnchor: string | null = null
 
   on('session.start', async ($, e, next) => {
     for (const command of COMMANDS) await $.command.register(command)
@@ -1590,6 +1751,7 @@ export const register: Register = (on, options) => {
     await update($, checkpoints, () => saved)
     if (cfg.checkpoints) void pruneShadow($).catch(() => undefined)
     await loadIdeas($)
+    await loadMcpOff($)
     void refreshHud($, true).catch(() => undefined)
     $.clock.every(4000, () => {
       void refreshHud($).catch(() => undefined)
@@ -1627,6 +1789,24 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'commit-nexus' }, async $ => ({ text: await runCommit($, cfg) }))
+
+  on('command.run', { command: 'context-nexus' }, async $ => {
+    const usage = await $.session.usage({ breakdown: 'full' })
+    const breakdown = usage.context.breakdown
+    if (breakdown === undefined) return { text: 'No context breakdown yet: send one message first, then run /context-nexus again.' }
+
+    return { text: contextReport(breakdown, mcpOff, await projectRoot($)) }
+  })
+
+  on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
+
+  // ── MCP servers turned off in this project: a one-line note behind ToolSearch ─
+  on('tool.describe', async ($, e, next) => {
+    const server = mcpServerOf(e.tool)
+    if (server === undefined || !mcpOff.includes(server)) return next(e)
+
+    return { description: offDescription(server), isDeferred: true }
+  })
 
   // The person picking a Claude Code theme while a skin holds it: that pick is
   // now their own, the one a skin like `default` goes back to.
@@ -1687,6 +1867,10 @@ export const register: Register = (on, options) => {
     if (tool === DESIGN_TOOL || tool === 'AskUserQuestion') return next(e)
     const isMain = e.agentId === undefined
     const command = SHELL_TOOLS.has(tool) ? field(e, 'command') : undefined
+    const server = mcpServerOf(tool)
+    if (server !== undefined && mcpOff.includes(server)) {
+      return { deny: `The MCP server "${server}" is turned off in this project by Nexus. Do without it, or ask the user to run /mcp-nexus on ${server}.` }
+    }
 
     // 1. Command Shield
     if (command !== undefined && cfg.shield) {
@@ -1753,7 +1937,9 @@ export const register: Register = (on, options) => {
       hasMutated: now.hasMutated || isMutating,
     }))
     try {
-      const result = await next(e)
+      const answer = await next(e)
+      // 4b. Long, routine shell output folded before Claude reads it
+      const result = cfg.trimOutput && command !== undefined ? await trimShellResult($, command, answer).catch(() => answer) : answer
       if (!cfg.loopGuard || !isMain) return result
       // 5. Loop detector: the same call failing, or made, over and over
       const step = trackCall(loop, callSignature(e), result.deny !== undefined || result.isError === true)
@@ -1819,6 +2005,20 @@ export const register: Register = (on, options) => {
         percent: context.percent ?? now.percent,
         at,
       }))
+      // Quota guard: once per window, ask mid-turn; idle, ask before the next prompt
+      if (cfg.quotaGuard > 0 && e.changed.includes('rateLimits')) {
+        void (async () => {
+          const what = await crossedQuota($, cfg, limits)
+          if (what === null) return
+          const current = await read($, turn)
+          if (current.isWorking && current.id !== null) {
+            await askQuotaMidTurn($, what, current.id)
+          } else {
+            quotaPending = what
+            $.ui.toast(`Quota: ${what}.`, { timeoutMs: 10_000 })
+          }
+        })().catch(() => undefined)
+      }
     }
 
     return next(e)
@@ -1923,6 +2123,20 @@ export const register: Register = (on, options) => {
       // 8. Offer the reply's first next step as the prompt's suggestion
       const step = cfg.suggestNext && !e.isAborted ? nextStepFrom(e.answer) : undefined
       if (step !== undefined) void suggestLater($, step).catch(() => undefined)
+      // 9. One dim line under the answer: time, tools, files, context, checks
+      if (cfg.turnFooter && !e.isAborted && e.reason === 'answer' && finished.tools > 0) {
+        const [v, h, now] = await Promise.all([read($, verify), read($, hud), $.clock.now()])
+        const isThisTurn = v.at >= now - e.durationMs - 1000
+        const footer = footerText({
+          durationMs: e.durationMs,
+          tools: finished.tools,
+          files: finished.changed.length,
+          contextPct: h.percent,
+          checks: isThisTurn && (v.phase === 'passed' || v.phase === 'failed') ? v.phase : null,
+        })
+
+        return { ...result, text: footer }
+      }
     } catch {
       // the turn is over either way; these are niceties
     }
@@ -1948,8 +2162,32 @@ export const register: Register = (on, options) => {
     if (!cfg.compactGuard || e.agentId !== undefined) return next(e)
     const [done, list, v] = await Promise.all([read($, work), read($, tasks), read($, verify)])
     const keep = compactInstructions({ files: done.files, tasks: list, checks: checksText(v) })
+    const result = await next({ ...e, instructions: e.instructions ? `${e.instructions}\n\n${keep}` : keep })
+    // What Claude reads first after the summary: the last request word for word, open work, the rules
+    if (e.trigger !== 'precompute' && result.skip === undefined) {
+      pendingAnchor = anchorText({
+        request: lastRequestIn(e.messages) || done.lastPrompt,
+        tasks: list,
+        files: done.files,
+        checks: checksText(v),
+        claudeMd: await readText($, `${await projectRoot($)}/CLAUDE.md`),
+      })
+    }
 
-    return next({ ...e, instructions: e.instructions ? `${e.instructions}\n\n${keep}` : keep })
+    return result
+  })
+
+  // The compaction stands: the anchor goes in now, so even a turn that goes on reads it.
+  on('classic.PostCompact', async ($, e, next) => {
+    if (pendingAnchor !== null) {
+      const text = pendingAnchor
+      pendingAnchor = null
+      await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } }).catch(() => {
+        pendingAnchor = text
+      })
+    }
+
+    return next(e)
   })
 
   // ── Session handoff: the last word before the session closes ──────────
@@ -1980,10 +2218,31 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') {
+    const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    if (isPerson && quotaPending !== null && !e.text.trim().startsWith('/')) {
+      const what = quotaPending
+      quotaPending = null
+      const answer = await $.ui
+        .ask(`⚠ QUOTA: ${what}. Send this prompt anyway?`, { header: 'Quota', options: [QUOTA_SEND, QUOTA_HOLD] })
+        .catch(() => QUOTA_SEND)
+      if (answer === QUOTA_HOLD) {
+        const held = e.text
+        $.clock.after(200, () => void $.prompt.fill({ text: held, mode: 'replace' }).catch(() => undefined))
+
+        return { drop: 'Held to save quota; the prompt is back in the box.' }
+      }
+    }
+    if (isPerson) {
       await update($, healAttempts, () => 0)
       const text = clip(e.text, 300)
       if (text !== '' && !text.startsWith('/')) await update($, work, now => ({ ...now, lastPrompt: text }))
+    }
+    // An anchor no PostCompact delivered rides along with the next prompt.
+    if (pendingAnchor !== null && !e.text.trim().startsWith('/')) {
+      const anchor = pendingAnchor
+      pendingAnchor = null
+
+      return next({ ...e, context: [...(e.context ?? []), anchor] })
     }
 
     return next(e)
