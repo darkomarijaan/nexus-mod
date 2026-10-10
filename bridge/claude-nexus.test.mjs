@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -75,4 +75,56 @@ test('on Windows, a claude.cmd found on PATH is started through a shell too', { 
   })
   assert.equal(run.status, 7, run.stderr)
   assert.deepEqual(JSON.parse(run.stdout.trim().split('\n').at(-1)).args, ['x y'])
+})
+
+test('settings env that sets the base URL, headers or auth token is warned about by file and name, never by value', () => {
+  const home = mkdtempSync(join(tmpdir(), 'nexus-home-'))
+  const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
+  mkdirSync(join(home, '.claude'))
+  mkdirSync(join(project, '.claude'))
+  writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://secret-hub.example/v1', OTHER: 'x' } }))
+  writeFileSync(join(project, '.claude', 'settings.json'), '{ not json')
+  writeFileSync(join(project, '.claude', 'settings.local.json'), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: 'sk-super-secret', ANTHROPIC_CUSTOM_HEADERS: 'X-K: hush' } }))
+  const fake = join(project, 'fake.mjs')
+  writeFileSync(fake, 'process.exit(0)\n')
+  const run = spawnSync(process.execPath, [launcher, fake], {
+    cwd: project,
+    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_NEXUS_CLAUDE: process.execPath },
+    encoding: 'utf8',
+    timeout: 20_000,
+  })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stderr, /settings\.json sets ANTHROPIC_BASE_URL/)
+  assert.match(run.stderr, /settings\.local\.json sets ANTHROPIC_AUTH_TOKEN/)
+  assert.match(run.stderr, /settings\.local\.json sets ANTHROPIC_CUSTOM_HEADERS/)
+  assert.equal(/OTHER/.test(run.stderr), false)
+  for (const secret of ['secret-hub', 'sk-super-secret', 'hush']) assert.equal(run.stderr.includes(secret), false)
+})
+
+test('settings files that are missing or hold no env say nothing', () => {
+  const home = mkdtempSync(join(tmpdir(), 'nexus-home-'))
+  const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
+  mkdirSync(join(project, '.claude'))
+  writeFileSync(join(project, '.claude', 'settings.json'), JSON.stringify({ env: null }))
+  const fake = join(project, 'fake.mjs')
+  writeFileSync(fake, 'process.exit(0)\n')
+  const run = spawnSync(process.execPath, [launcher, fake], {
+    cwd: project,
+    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_NEXUS_CLAUDE: process.execPath },
+    encoding: 'utf8',
+    timeout: 20_000,
+  })
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(/overrides what claude-nexus sets/.test(run.stderr), false)
+})
+
+test('the sh launcher finds the bridge when started through a symlink', { skip: process.platform === 'win32' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nexus-link-'))
+  const fake = join(dir, 'fake.mjs')
+  writeFileSync(fake, `console.log('base=' + process.env.ANTHROPIC_BASE_URL)\n`)
+  const link = join(dir, 'claude-nexus')
+  symlinkSync(fileURLToPath(new URL('../bin/claude-nexus', import.meta.url)), link)
+  const run = spawnSync(link, [fake], { env: { ...process.env, CLAUDE_NEXUS_CLAUDE: process.execPath }, encoding: 'utf8', timeout: 20_000 })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout, /base=http:\/\/127\.0\.0\.1:\d+/)
 })

@@ -4,7 +4,7 @@
 // ANTHROPIC_BASE_URL points at this router).
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { constants as osConstants, homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
@@ -22,6 +22,21 @@ const router = await startRouter({ token, controlToken, log, debug: logFile !== 
 
 for (const name of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
   if (process.env[name]) console.error(`claude-nexus: ${name} is set, so it, not your claude.ai login, reaches Anthropic on the Claude route.`)
+}
+
+// Claude Code applies the env of its settings files on top of ours, so these names there would undo the router.
+const OVERRIDES = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_AUTH_TOKEN']
+for (const file of [join(homedir(), '.claude', 'settings.json'), join(process.cwd(), '.claude', 'settings.json'), join(process.cwd(), '.claude', 'settings.local.json')]) {
+  let settings
+  try {
+    settings = JSON.parse(readFileSync(file, 'utf8'))
+  } catch {
+    continue
+  }
+  const set = settings !== null && typeof settings === 'object' && settings.env !== null && typeof settings.env === 'object' ? settings.env : {}
+  for (const name of OVERRIDES) {
+    if (name in set) console.error(`claude-nexus: ${file} sets ${name} in its env, which overrides what claude-nexus sets for the router; remove it, or requests will bypass the router or be refused.`)
+  }
 }
 
 const own = process.env.ANTHROPIC_CUSTOM_HEADERS

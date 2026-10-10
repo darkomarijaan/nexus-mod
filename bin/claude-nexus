@@ -1,2 +1,10 @@
 #!/bin/sh
-exec node "$(dirname "$0")/../bridge/claude-nexus.mjs" "$@"
+# Resolve symlinks first, so the bridge is found when this is linked from a folder on PATH.
+self=$0
+while [ -L "$self" ]; do
+  dir=$(cd -P "$(dirname "$self")" && pwd)
+  self=$(readlink "$self")
+  case $self in /*) ;; *) self=$dir/$self ;; esac
+done
+here=$(cd -P "$(dirname "$self")" && pwd)
+exec node "$here/../bridge/claude-nexus.mjs" "$@"

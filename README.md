@@ -106,6 +106,11 @@ The quotas show on a Claude subscription once the first reply of the session arr
 
 The hub must speak the Anthropic Messages API (`POST <hub URL>/messages`), as OmniRoute, LiteLLM and claude-code-router do. Your claude.ai login stays the credential on the Claude route; the hub key is added by the router only on hub requests, and the login never reaches the hub. Profiles, keys included, live in Nexus's local store. Set `NEXUS_ROUTER_DEBUG=1` before `claude-nexus` to log each request's route and status to `~/.claude/nexus/router-<pid>.log`.
 
+Things to know inside a `claude-nexus` session:
+
+- Scripts and tools you run there that call Anthropic themselves (the SDK, a nested `claude`) inherit `ANTHROPIC_BASE_URL` and reach the router without its token, so they get a 401 (a nested `claude` would ride the outer router instead). Unset `ANTHROPIC_BASE_URL` for them.
+- `env` in `~/.claude/settings.json`, `.claude/settings.json` or `.claude/settings.local.json` overrides what the launcher sets. If any of them sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS` or `ANTHROPIC_AUTH_TOKEN`, `claude-nexus` warns at start (naming the file and the variable) and the router refuses a request that lacks its token with an error that says so.
+
 ## Settings
 
 Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugin`, pick nexus, then Configure).

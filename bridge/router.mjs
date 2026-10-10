@@ -86,7 +86,39 @@ const validProfile = profile =>
   profile.apiKey !== '' &&
   hubModel('claude-sonnet', profile.models) !== undefined
 
-export async function startRouter({ token, controlToken, anthropic = 'https://api.anthropic.com', holdMs = 120_000, log = () => {}, debug = false }) {
+// A hub error body is read up to this size so the hub key can be masked in it.
+const ERROR_BODY_MAX = 64 * 1024
+
+// Reads at most `max` bytes of a stream (plus `extra`, so a key cut by the limit can still be found), then stops the rest.
+const readCapped = (stream, max, extra) =>
+  new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    stream.on('data', chunk => {
+      chunks.push(chunk)
+      size += chunk.length
+      if (size >= max + extra) {
+        resolve(Buffer.concat(chunks))
+        stream.destroy()
+      }
+    })
+    stream.on('end', () => resolve(Buffer.concat(chunks)))
+    stream.on('error', error => (size >= max + extra ? resolve(Buffer.concat(chunks)) : reject(error)))
+    stream.on('close', () => resolve(Buffer.concat(chunks)))
+  })
+
+const maskIn = (buffer, key) => Buffer.from(buffer.toString('utf8').split(key).join('***'))
+
+export async function startRouter({
+  token,
+  controlToken,
+  anthropic = 'https://api.anthropic.com',
+  holdMs = 120_000,
+  // A plan-limit 429 is held only if Nexus polled /__nexus/events within this long; otherwise nobody would decide it.
+  listenMs = 35_000,
+  log = () => {},
+  debug = false,
+}) {
   for (const secret of [token, controlToken]) {
     if (typeof secret !== 'string' || secret === '') throw new TypeError('startRouter needs a non-empty token and controlToken')
   }
@@ -95,6 +127,8 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
   const held = new Map()
   const events = []
   const waiters = new Set()
+  let polledAt = Number.NEGATIVE_INFINITY
+  const listening = () => waiters.size > 0 || Date.now() - polledAt <= listenMs
 
   const emit = event => {
     events.push(event)
@@ -123,7 +157,26 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
       emit({ type: 'upstream-error', route: state.route, status: 502 })
       return apiError(res, 502, `the hub "${state.route}" could not be reached (${error.code ?? 'unknown error'})`)
     }
-    if ((upstream.statusCode ?? 502) >= 400) emit({ type: 'upstream-error', route: state.route, status: upstream.statusCode })
+    const status = upstream.statusCode ?? 502
+    // count_tokens 404s are a hub's normal answer without that endpoint; only a failed model request is news.
+    if (status >= 400 && isInference(req.method, req.url)) emit({ type: 'upstream-error', route: state.route, status })
+    if (status >= 400 && !String(upstream.headers['content-type'] ?? '').includes('text/event-stream')) {
+      // A hub may echo the key it was given in an error; it must not reach the transcript.
+      let raw
+      try {
+        raw = await readCapped(upstream, ERROR_BODY_MAX, profile.apiKey.length)
+      } catch (error) {
+        note(ctx, route, status, failure(error))
+        if (signal.aborted) return
+        return apiError(res, 502, `the hub "${state.route}" closed the connection mid-answer`)
+      }
+      const masked = maskIn(raw, profile.apiKey).subarray(0, ERROR_BODY_MAX)
+      const headers = { ...upstream.headers, 'content-length': String(masked.length) }
+      delete headers['transfer-encoding']
+      note(ctx, route, status)
+      if (res.headersSent) return res.destroy()
+      return void res.writeHead(status, headers).end(masked)
+    }
     pipe(upstream, res, error => note(ctx, route, upstream.statusCode, failure(error)))
   }
 
@@ -149,7 +202,8 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
       if (unified.length > 0) log(`unified ${upstream.statusCode} ${unified.map(([name, value]) => `${name}=${value}`).join(' ')}`)
     }
     const limit = isInference(req.method, req.url) ? planLimit(upstream.statusCode, upstream.headers) : null
-    if (limit === null) return pipe(upstream, res, error => note(ctx, 'claude', upstream.statusCode, failure(error)))
+    // Nobody is listening for the question: let Claude Code see its 429 straight away.
+    if (limit === null || !listening()) return pipe(upstream, res, error => note(ctx, 'claude', upstream.statusCode, failure(error)))
 
     // A plan limit: hold the request while Nexus asks where it should go.
     const rejected = await readAll(upstream).catch(() => null)
@@ -162,6 +216,9 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
         clearTimeout(timer)
         signal.removeEventListener('abort', gone)
         held.delete(id)
+        // The question is moot once the request is settled; drop it if Nexus has not fetched it yet.
+        const queued = events.findIndex(event => event.type === 'limit' && event.id === id)
+        if (queued !== -1) events.splice(queued, 1)
         resolve(one)
       }
       const gone = () => settle({ action: 'release' })
@@ -186,14 +243,18 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
     if (req.method === 'POST' && bare === '/__nexus/route') {
       if (input.route === 'claude') {
         state.route = 'claude'
+        emit({ type: 'route', route: 'claude' })
         return json(res, 200, { ok: true, route: 'claude' })
       }
       if (typeof input.route !== 'string' || input.route === '' || !validProfile(input.profile)) return json(res, 400, { error: 'route needs a name and a profile with hubUrl, apiKey and a model' })
       state.route = input.route
       state.profile = { hubUrl: input.profile.hubUrl, apiKey: input.profile.apiKey, models: input.profile.models }
+      // Whoever changed the route, Nexus is told, so its badge says where requests really go.
+      emit({ type: 'route', route: state.route, model: hubModel('claude-opus', state.profile.models) ?? null })
       return json(res, 200, { ok: true, route: state.route })
     }
     if (req.method === 'GET' && bare === '/__nexus/events') {
+      polledAt = Date.now()
       const wait = Math.min(30, Math.max(0, Number(new URLSearchParams(query).get('wait') ?? 0))) * 1000
       if (events.length === 0 && wait > 0) {
         await new Promise(resolve => {
@@ -206,6 +267,7 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
           waiters.add(wake)
         })
       }
+      polledAt = Date.now()
       return json(res, 200, { events: events.splice(0) })
     }
     if (req.method === 'POST' && bare === '/__nexus/decision') {
@@ -215,6 +277,18 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
       return json(res, 200, { ok: true })
     }
     return json(res, 404, { error: 'not found' })
+  }
+
+  // A refusal says what is wrong in the API's own shape; the debug log keeps method, path and the reason, never a token.
+  const refuse = (req, res, status, reason) => {
+    if (debug) log(`${req.method} ${req.url.split('?')[0]} -> refused ${status} ${reason}`)
+    if (reason === 'host') return apiError(res, status, 'this request did not use the router address in its Host header; it was refused', 'permission_error')
+    apiError(
+      res,
+      status,
+      'this request did not carry the Nexus router token. Check the env in your settings.json for ANTHROPIC_CUSTOM_HEADERS or ANTHROPIC_BASE_URL, which override what claude-nexus sets.',
+      'authentication_error',
+    )
   }
 
   const server = createServer(async (req, res) => {
@@ -227,13 +301,13 @@ export async function startRouter({ token, controlToken, anthropic = 'https://ap
     let kind
     try {
       const port = server.address().port
-      if (!hostAllowed(req.headers.host, port)) return json(res, 403, { error: 'forbidden' })
+      if (!hostAllowed(req.headers.host, port)) return refuse(req, res, 403, 'host')
       kind = routeFor(req.method, req.url, state.route)
       if (kind === 'control') {
-        if (!same(req.headers['x-nexus-control'], controlToken)) return json(res, 401, { error: 'unauthorized' })
+        if (!same(req.headers['x-nexus-control'], controlToken)) return refuse(req, res, 401, 'token')
         return await control(req, res, req.url)
       }
-      if (!same(req.headers['x-nexus-router'], token)) return json(res, 401, { error: 'unauthorized' })
+      if (!same(req.headers['x-nexus-router'], token)) return refuse(req, res, 401, 'token')
       const body = await readAll(req)
       const ctx = { req, res, started, signal: abort.signal }
       return kind === 'hub' ? await toHub(ctx, body) : await toClaude(ctx, body)
