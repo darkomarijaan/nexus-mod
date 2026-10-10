@@ -1,5 +1,7 @@
 import type { PluginOptions } from 'claude-code'
 
+import { DEFAULT_THEME, isTheme } from './theme'
+
 export type AuditMode = 'plan' | 'first-edit' | 'off'
 
 export type NexusConfig = {
@@ -24,6 +26,7 @@ export type NexusConfig = {
   maxAgents: number
   suggestNext: boolean
   commitHelper: boolean
+  theme: string
 }
 
 const flag = (value: unknown, fallback: boolean) =>
@@ -37,6 +40,7 @@ const text = (value: unknown, fallback: string) =>
 
 export function readConfig(options: PluginOptions): NexusConfig {
   const audit = text(options.assumptionAudit, 'plan')
+  const theme = text(options.theme, DEFAULT_THEME).trim().toLowerCase()
 
   return {
     shield: flag(options.shield, true),
@@ -63,5 +67,6 @@ export function readConfig(options: PluginOptions): NexusConfig {
     maxAgents: Math.floor(count(options.maxAgents, 0)),
     suggestNext: flag(options.suggestNext, true),
     commitHelper: flag(options.commitHelper, true),
+    theme: isTheme(theme) ? theme : DEFAULT_THEME,
   }
 }

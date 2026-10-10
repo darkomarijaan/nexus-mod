@@ -38,6 +38,7 @@ export const PANE = {
   idea: 'nexus-idea',
   design: 'nexus-design',
   shield: 'nexus-shield',
+  theme: 'nexus-theme',
 } as const
 
 export const DESIGN_TOOL = 'mcp__nexus__design_options'

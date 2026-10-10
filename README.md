@@ -8,26 +8,27 @@ An all-in-one workspace suite for Claude Code:
 - **Assumption review**: before a plan is shown, you confirm or correct the assumptions Claude made.
 - **Command Shield**: asks before dangerous shell commands run.
 - **Secret masking**: hides API keys, tokens and passwords before they are stored or sent.
-- **Turn checkpoints** with `/rollback`.
+- **Turn checkpoints** with `/rollback-nexus`.
 - **Design Lens**: UI options shown as live visual cards in your browser.
 - **Auto lint/test** with self-healing.
 - **Clean delivery**: a quiet transcript and a plain-English final summary.
 - **Limit forecast**: from how fast 5h and weekly usage climb, a red `⚠ out ~1h 10m` when the pace runs the window out before it resets.
 - **Done / approval alerts**: a desktop notification and a sound when a long turn finishes, a different sound when Claude needs your approval.
 - **Compaction guard**: a warning at 80% context, and compaction told to keep file paths, open tasks, check results and decisions.
-- **Session handoff**: what each session did is saved; the next session in the project shows it, and `/handoff` hands it to Claude.
+- **Session handoff**: what each session did is saved; the next session in the project shows it, and `/handoff-nexus` hands it to Claude.
 - **Loop detector**: when the same call fails 3 times (or repeats 6 times) Claude is told to change approach; a turn past 20 minutes is flagged.
 - **Cache freshness**: `warm 2m`, `idle 12m` or `cold` beside the cache hits, so you know whether the next reply starts cold.
-- **Subagent monitor**: running subagents in the HUD and in `/sessions` with how long each has run, and an optional cap.
+- **Subagent monitor**: running subagents in the HUD and in `/sessions-nexus` with how long each has run, and an optional cap.
 - **Next-step suggestion**: the reply's first Next Step offered as the prompt's dim suggestion; Tab takes it.
-- **Commit helper**: after changes, a `Commit` button and `/commit` draft a message from the diff and commit once you confirm.
+- **Commit helper**: after changes, a `Commit` button and `/commit-nexus` draft a message from the diff and commit once you confirm.
+- **Themes (skins)**: nine looks for the HUD and drawers (colors, bar glyphs, icons, borders): `default`, `claude` (follows Claude Code's own `/theme`), `dracula`, `nord`, `ocean`, `sunset`, `forest`, `mono` and `ascii` (for fonts without Unicode). Switch with `/skin-nexus` (Claude Code's own `/theme` changes Claude Code's colors, not Nexus's); the pick is remembered across sessions.
 
 ## Requirements
 
 - Claude Code 2.1.296 or newer
 - `git` on PATH (for checkpoints and rollback)
 - `node` on PATH (optional: lets a click in the browser preview reach Claude)
-- Microsoft Edge or Google Chrome (optional: for `/preview` screenshots)
+- Microsoft Edge or Google Chrome (optional: for `/preview-nexus` screenshots)
 
 ## Install
 
@@ -60,12 +61,13 @@ claude --plugin-dir C:\path\to\nexus-mod
 | Command | What it does |
 |---|---|
 | `/nexus` | Status of every module, and the keys |
-| `/sessions` | Every Claude Code session on this machine: inspect, ask one to pause, message it, copy its resume command |
-| `/idea <text>` | Save an idea to `.claude/ideas.md` without interrupting Claude (no text opens the scratchpad) |
-| `/rollback` | Undo the files the latest turn changed. Also `/rollback list`, `/rollback 3`, `/rollback undo` |
-| `/preview [url]` | Screenshot the dev server; run it again after changes for a before/after comparison |
-| `/handoff` | What the last session in this project did; Claude reads it too, so it can pick the work up |
-| `/commit` | Commit every change in the work tree with a drafted message, after you confirm it |
+| `/sessions-nexus` | Every Claude Code session on this machine: inspect, ask one to pause, message it, copy its resume command |
+| `/idea-nexus <text>` | Save an idea to `.claude/ideas.md` without interrupting Claude (no text opens the scratchpad) |
+| `/rollback-nexus` | Undo the files the latest turn changed. Also `/rollback-nexus list`, `/rollback-nexus 3`, `/rollback-nexus undo` |
+| `/preview-nexus [url]` | Screenshot the dev server; run it again after changes for a before/after comparison |
+| `/handoff-nexus` | What the last session in this project did; Claude reads it too, so it can pick the work up |
+| `/commit-nexus` | Commit every change in the work tree with a drafted message, after you confirm it |
+| `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
 
 **Keys:** press `ctrl+x tab` to focus the bar above the prompt, then one letter:
 
@@ -77,6 +79,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `i` | Idea |
 | `z` | Rollback |
 | `p` | Preview |
+| `t` | Skin (on a wide terminal) |
 | `c` | Commit (shown after a turn that changed files, in a git repo) |
 
 So `ctrl+x tab s` opens Sessions, `ctrl+x tab i` the idea pad, `ctrl+x tab z` rolls back. A mod cannot take a bare `ctrl+z` or a `ctrl+x s` chord in this Claude Code build, so the keys go through the bar.
@@ -100,7 +103,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Quiet transcript | on | Routine tool calls drawn as one line |
 | Executive summary | on | What Changed / Verification Status / Next Steps |
 | Design Lens | on | Visual design cards |
-| Dev server URL | empty | `/preview` target (empty: probe localhost) |
+| Dev server URL | empty | `/preview-nexus` target (empty: probe localhost) |
 | Helper model | `haiku` | Model for Enhance, assumption review and commit messages |
 | Done / approval alerts | on | Notification and sound when a long turn ends or Claude needs you |
 | Alert after | `30` s | Only turns at least this long raise the done alert |
@@ -109,7 +112,8 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Loop detector | on | Break repeated failing calls; flag 20-minute turns |
 | Max subagents at once | `0` | Refuse new subagents past this many (0: no limit) |
 | Next-step suggestion | on | Offer the reply's first Next Step as the prompt suggestion |
-| Commit helper | on | Commit button and `/commit` |
+| Commit helper | on | Commit button and `/commit-nexus` |
+| Theme | `default` | Starting theme; a `/skin-nexus` pick overrides it until `/skin-nexus reset` |
 
 ## Where it keeps things
 

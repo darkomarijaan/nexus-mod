@@ -19,6 +19,7 @@ import type {
 import { type NexusConfig, readConfig } from './config'
 import { comparePage, designPage, isHex, tokensOf } from './design'
 import { maskSecrets } from './secrets'
+import { paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, scanCommand, type ShieldHit } from './shield'
 import {
   addSample,
@@ -39,7 +40,6 @@ import { DESIGN_TOOL, EMPTY_HUD, EMPTY_WORK, IDLE_TURN, IDLE_VERIFY, PANE } from
 import {
   ago,
   applyTaskUpdate,
-  bar,
   clip,
   compact,
   describeInput,
@@ -107,6 +107,8 @@ const tasks = atom({ plugin: 'nexus', key: 'tasks' } as const, [] as NexusTask[]
 const speed = atom({ plugin: 'nexus', key: 'speed' } as const, null as NexusSpeed | null)
 // What the session did across turns: handoff, compaction and commit read it.
 const work = atom({ plugin: 'nexus', key: 'work' } as const, EMPTY_WORK)
+// The theme (skin) every drawing reads; /skin-nexus writes it and $.store keeps it.
+const themeName = atom({ plugin: 'nexus', key: 'theme' } as const, 'default')
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -414,7 +416,7 @@ async function runRollback($: Engine, args: string): Promise<string> {
     if (turns.length === 0) return 'No checkpoints yet. One is taken before the first file change of each turn.'
 
     return [
-      'Checkpoints, newest first (/rollback <n> restores one):',
+      'Checkpoints, newest first (/rollback-nexus <n> restores one):',
       ...turns
         .slice()
         .reverse()
@@ -439,7 +441,7 @@ async function runRollback($: Engine, args: string): Promise<string> {
     void refreshHud($, true).catch(() => undefined)
     const kept = report.kept.length > 0 ? ` Kept ${report.kept.length} older ignored file(s).` : ''
 
-    return `Rolled the project back to checkpoint ${target.sha.slice(0, 8)} (${ago(target.at, now)} ago): restored ${report.restored.length} file(s), removed ${report.removed.length} file(s) created since.${kept} Files on disk no longer match what earlier messages describe. Undo with /rollback undo.`
+    return `Rolled the project back to checkpoint ${target.sha.slice(0, 8)} (${ago(target.at, now)} ago): restored ${report.restored.length} file(s), removed ${report.removed.length} file(s) created since.${kept} Files on disk no longer match what earlier messages describe. Undo with /rollback-nexus undo.`
   } catch (error) {
     return `Rollback failed: ${error instanceof Error ? error.message : String(error)}`
   } finally {
@@ -641,7 +643,7 @@ async function addIdea($: Engine, text: string): Promise<void> {
   if (idea === '') return
   const path = await ideasPath($)
   const body =
-    (await readText($, path)) || '# Ideas\n\nCaptured with Nexus /idea. Kept local; never sent to Claude.\n'
+    (await readText($, path)) || '# Ideas\n\nCaptured with Nexus /idea-nexus. Kept local; never sent to Claude.\n'
   const line = `- [${stamp(await $.clock.now())}] ${idea}`
   await $.fs.write(path, `${body.trimEnd()}\n${line}\n`)
   await update($, ideas, list => [...list, line].slice(-12))
@@ -792,7 +794,7 @@ async function runPreview($: Engine, cfg: NexusConfig, args: string): Promise<st
   const isBase = words.includes('base') || words.includes('before')
   const url = words.find(word => /^https?:\/\//.test(word)) ?? (cfg.devServerUrl || (await probeDevServer($)))
   if (url === undefined) {
-    return 'No dev server answered on localhost (5173, 3000, 8080, 4200, 8000, 5000, 4321). Start it, or pass a URL: /preview http://localhost:5173'
+    return 'No dev server answered on localhost (5173, 3000, 8080, 4200, 8000, 5000, 4321). Start it, or pass a URL: /preview-nexus http://localhost:5173'
   }
   const browser = await findBrowser($)
   if (browser === undefined) return 'No Chrome, Edge or Chromium found to take headless screenshots.'
@@ -820,7 +822,7 @@ async function runPreview($: Engine, cfg: NexusConfig, args: string): Promise<st
   if (isBase || shots.length === 0) {
     await $.store.set(key, [shot])
 
-    return `Captured the BEFORE snapshot of ${url}. Make your changes, then run /preview again to compare.`
+    return `Captured the BEFORE snapshot of ${url}. Make your changes, then run /preview-nexus again to compare.`
   }
   const base = shots[0] ?? shot
   await $.store.set(key, [base, shot])
@@ -829,7 +831,7 @@ async function runPreview($: Engine, cfg: NexusConfig, args: string): Promise<st
   const target = await previewUrl($, page)
   const opened = await openExternal($, target)
 
-  return `Captured the AFTER snapshot of ${url} and ${opened ? 'opened' : 'wrote'} the before/after comparison: ${target}  (/preview base starts a new baseline)`
+  return `Captured the AFTER snapshot of ${url} and ${opened ? 'opened' : 'wrote'} the before/after comparison: ${target}  (/preview-nexus base starts a new baseline)`
 }
 
 // ── Sessions ─────────────────────────────────────────────────────────────
@@ -849,6 +851,41 @@ async function messagePeer($: Engine, sessionId: string, text: string): Promise<
 async function openPane($: Engine, id: string, title: string): Promise<void> {
   if (id === PANE.sessions) void refreshHud($, true).catch(() => undefined)
   await $.ui.open({ id, title, focus: true, closeOnEscape: true })
+}
+
+// ── Theme ────────────────────────────────────────────────────────────────
+
+// Across sessions and projects: the person's last /skin-nexus pick.
+const THEME_KEY = 'theme'
+
+async function storedTheme($: Engine): Promise<string | null> {
+  const stored = await $.store.get(THEME_KEY).catch(() => null)
+
+  return typeof stored === 'string' && isTheme(stored) ? stored : null
+}
+
+/** Switches the theme now and remembers it; null forgets the pick, back to the configured one. */
+async function setTheme($: Engine, cfg: NexusConfig, name: string | null): Promise<Theme> {
+  const theme = themeOf(name ?? cfg.theme)
+  if (name === null) await $.store.delete(THEME_KEY).catch(() => undefined)
+  else await $.store.set(THEME_KEY, theme.name)
+  await update($, themeName, () => theme.name)
+
+  return theme
+}
+
+async function runTheme($: Engine, cfg: NexusConfig, args: string): Promise<string | undefined> {
+  const wanted = args.trim().toLowerCase()
+  if (wanted === '') {
+    await openPane($, PANE.theme, 'Skin')
+
+    return undefined
+  }
+  if (wanted === 'list') return themeListText(await read($, themeName))
+  if (wanted === 'reset') return `Skin back to the configured one: ${(await setTheme($, cfg, null)).name}`
+  if (!isTheme(wanted)) return `No skin named "${wanted}". Skins: ${THEMES.map(theme => theme.name).join(', ')}`
+
+  return `Skin: ${(await setTheme($, cfg, wanted)).name}`
 }
 
 // ── Session handoff ──────────────────────────────────────────────────────
@@ -1177,7 +1214,7 @@ type Gauge = {
 const usedColor = (pct: number) => (pct >= 85 ? 'red' : pct >= 60 ? 'yellow' : 'green')
 
 /** The grid's two columns: account limits on the left, the model's readings on the right. */
-function hudGauges(view: NexusHud, rate: NexusSpeed | null, now: number, isWorking: boolean): { left: Gauge[]; right: Gauge[] } {
+function hudGauges(view: NexusHud, rate: NexusSpeed | null, now: number, isWorking: boolean, icons: Theme['icons']): { left: Gauge[]; right: Gauge[] } {
   const left: Gauge[] = []
   for (const kind of ['five_hour', 'seven_day']) {
     const limit = view.limits.find(one => one.kind === kind)
@@ -1191,7 +1228,7 @@ function hudGauges(view: NexusHud, rate: NexusSpeed | null, now: number, isWorki
       percent: label.used,
       color: out === undefined ? usedColor(label.used) : 'red',
       detail: label.reset,
-      ...(out === undefined ? {} : { note: { text: `⚠ ${out}`, color: 'red' } }),
+      ...(out === undefined ? {} : { note: { text: `${icons.warn} ${out}`, color: 'red' } }),
     })
   }
   const right: Gauge[] = []
@@ -1199,7 +1236,7 @@ function hudGauges(view: NexusHud, rate: NexusSpeed | null, now: number, isWorki
     const pct = view.percent ?? Math.round((view.tokens / view.window) * 100)
     right.push({ key: 'ctx', name: 'Ctx', percent: pct, color: usedColor(pct), detail: `${compact(view.tokens)}/${compact(view.window)}` })
   }
-  const speedText = rate?.tps != null ? `⚡ ${rate.tps} tok/s` : ''
+  const speedText = rate?.tps != null ? `${icons.speed} ${rate.tps} tok/s` : ''
   // How long since the last request: past the cache's life the next reply starts cold.
   const age = rate === null ? undefined : cacheAge(rate.at, now, isWorking)
   const note = age === undefined ? {} : { note: { text: age.text, color: age.color } }
@@ -1246,14 +1283,14 @@ function activeTask(
   return undefined
 }
 
-function verifyLabel(v: NexusVerify): { text: string; color?: string } | undefined {
+function verifyLabel(v: NexusVerify, icons: Theme['icons']): { text: string; color?: string } | undefined {
   switch (v.phase) {
     case 'running':
-      return { text: '⟳ checking', color: 'yellow' }
+      return { text: `${icons.busy} checking`, color: 'yellow' }
     case 'passed':
-      return { text: `✓ ${v.checks.length} check${v.checks.length === 1 ? '' : 's'} passed`, color: 'green' }
+      return { text: `${icons.ok} ${v.checks.length} check${v.checks.length === 1 ? '' : 's'} passed`, color: 'green' }
     case 'failed':
-      return { text: `✗ ${v.checks.filter(check => !check.isOk).length} failing`, color: 'red' }
+      return { text: `${icons.fail} ${v.checks.filter(check => !check.isOk).length} failing`, color: 'red' }
     case 'none':
       return { text: '· no checks found' }
     default:
@@ -1262,13 +1299,14 @@ function verifyLabel(v: NexusVerify): { text: string; color?: string } | undefin
 }
 
 const COMMANDS = [
-  { name: 'sessions', description: 'Nexus: every Claude Code session on this machine; inspect, pause or message one', immediate: true },
-  { name: 'idea', description: 'Nexus: capture an idea to .claude/ideas.md without interrupting Claude', argumentHint: '[text]', immediate: true },
-  { name: 'rollback', description: 'Nexus: undo the files the latest turn changed', argumentHint: '[list | n | undo]' },
-  { name: 'preview', description: 'Nexus: before/after screenshots of the frontend dev server', argumentHint: '[url] [base]' },
+  { name: 'sessions-nexus', description: 'Nexus: every Claude Code session on this machine; inspect, pause or message one', immediate: true },
+  { name: 'idea-nexus', description: 'Nexus: capture an idea to .claude/ideas.md without interrupting Claude', argumentHint: '[text]', immediate: true },
+  { name: 'rollback-nexus', description: 'Nexus: undo the files the latest turn changed', argumentHint: '[list | n | undo]' },
+  { name: 'preview-nexus', description: 'Nexus: before/after screenshots of the frontend dev server', argumentHint: '[url] [base]' },
   { name: 'nexus', description: 'Nexus: status of every module and the keys' },
-  { name: 'handoff', description: 'Nexus: what the last session in this project did, so Claude can pick it up' },
-  { name: 'commit', description: 'Nexus: commit the work tree with a drafted message, after you confirm it' },
+  { name: 'handoff-nexus', description: 'Nexus: what the last session in this project did, so Claude can pick it up' },
+  { name: 'commit-nexus', description: 'Nexus: commit the work tree with a drafted message, after you confirm it' },
+  { name: 'skin-nexus', description: 'Nexus: change the skin (theme) of the HUD and drawers', argumentHint: '[name | list | reset]', immediate: true },
 ] as const
 
 const DESIGN_SCHEMA = {
@@ -1307,26 +1345,27 @@ const DESIGN_SCHEMA = {
   },
 }
 
-function statusText(cfg: NexusConfig): string {
+function statusText(cfg: NexusConfig, theme: string): string {
   const on = (flag: boolean) => (flag ? 'on ' : 'off')
 
   return [
     'Nexus',
     `  Command Shield      ${on(cfg.shield)}  protected branches: ${cfg.protectedBranches.join(', ') || 'none'}`,
     `  Secret Sanitizer    ${on(cfg.sanitizer)}`,
-    `  Turn checkpoints    ${on(cfg.checkpoints)}  /rollback [list | n | undo]`,
+    `  Turn checkpoints    ${on(cfg.checkpoints)}  /rollback-nexus [list | n | undo]`,
     `  Assumption review   ${cfg.assumptionAudit}`,
     `  Auto lint/test      ${on(cfg.autoVerify)}  self-heal attempts: ${cfg.maxHealAttempts}`,
     `  Quiet transcript    ${on(cfg.quietTranscript)}`,
     `  Executive summary   ${on(cfg.executiveSummary)}`,
-    `  Design Lens         ${on(cfg.designLens)}  /preview [url] [base]`,
+    `  Design Lens         ${on(cfg.designLens)}  /preview-nexus [url] [base]`,
     `  Done/approval alert ${on(cfg.notify)}  after turns of ${Math.round(cfg.notifyAfterMs / 1000)}s or more`,
     `  Compaction guard    ${on(cfg.compactGuard)}`,
-    `  Session handoff     ${on(cfg.handoff)}  /handoff`,
+    `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
     `  Subagent cap        ${cfg.maxAgents === 0 ? 'none' : cfg.maxAgents}`,
     `  Next-step suggest   ${on(cfg.suggestNext)}`,
-    `  Commit helper       ${on(cfg.commitHelper)}  /commit`,
+    `  Commit helper       ${on(cfg.commitHelper)}  /commit-nexus`,
+    `  Skin                ${theme}  /skin-nexus [name | list | reset]`,
     '',
     'HUD: branch, model, sessions (green working, yellow waiting, gray idle), running',
     '  subagents; 5h and weekly usage with resets and a red forecast when the pace runs',
@@ -1334,7 +1373,7 @@ function statusText(cfg: NexusConfig): string {
     '  warning when a reply was cut off; the active task with its progress.',
     '',
     'Keys: ctrl+x tab focuses the bar above the prompt, then',
-    '  e Enhance   g Send   s Sessions   i Idea   z Rollback   p Preview   c Commit',
+    '  e Enhance   g Send   s Sessions   i Idea   z Rollback   p Preview   t Skin   c Commit',
     '  (so ctrl+x tab s opens Sessions, ctrl+x tab z rolls back)',
     'Turn any module on or off: /plugin configure nexus@nexus-mod',
   ].join('\n')
@@ -1369,6 +1408,8 @@ export const register: Register = (on, options) => {
       })
       void runBridge($)
     }
+    const picked = (await storedTheme($)) ?? cfg.theme
+    await update($, themeName, () => picked)
     const saved = await listCheckpoints($)
     await update($, checkpoints, () => saved)
     await loadIdeas($)
@@ -1382,33 +1423,39 @@ export const register: Register = (on, options) => {
   })
 
   // ── Commands ──────────────────────────────────────────────────────────
-  on('command.run', { command: 'sessions' }, async $ => {
+  on('command.run', { command: 'sessions-nexus' }, async $ => {
     await openPane($, PANE.sessions, 'Sessions')
 
     return {}
   })
 
-  on('command.run', { command: 'idea' }, async ($, e) => {
+  on('command.run', { command: 'idea-nexus' }, async ($, e) => {
     if (e.args.trim() !== '') await addIdea($, e.args)
     else await openPane($, PANE.idea, 'Idea scratchpad')
 
     return {}
   })
 
-  on('command.run', { command: 'rollback' }, async ($, e) => ({ text: await runRollback($, e.args) }))
+  on('command.run', { command: 'rollback-nexus' }, async ($, e) => ({ text: await runRollback($, e.args) }))
 
-  on('command.run', { command: 'preview' }, async ($, e) => ({ text: await runPreview($, cfg, e.args) }))
+  on('command.run', { command: 'preview-nexus' }, async ($, e) => ({ text: await runPreview($, cfg, e.args) }))
 
-  on('command.run', { command: 'nexus' }, () => ({ text: statusText(cfg) }))
+  on('command.run', { command: 'nexus' }, async $ => ({ text: statusText(cfg, await read($, themeName)) }))
 
-  on('command.run', { command: 'handoff' }, async $ => {
+  on('command.run', { command: 'handoff-nexus' }, async $ => {
     const record = previousHandoff ?? (await readHandoff($))
     if (record === null) return { text: 'No earlier session of this project has a handoff yet.' }
 
     return { text: handoffText(record, await $.clock.now()) }
   })
 
-  on('command.run', { command: 'commit' }, async $ => ({ text: await runCommit($, cfg) }))
+  on('command.run', { command: 'commit-nexus' }, async $ => ({ text: await runCommit($, cfg) }))
+
+  on('command.run', { command: 'skin-nexus' }, async ($, e) => {
+    const text = await runTheme($, cfg, e.args)
+
+    return text === undefined ? {} : { text }
+  })
 
   // ── The design tool the model calls ───────────────────────────────────
   on('tool.call', { tool: new RegExp(`^${DESIGN_TOOL}$`) }, async ($, e) => {
@@ -1797,7 +1844,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [now, t, v, cps, working, list, rate] = await Promise.all([
+    const [now, t, v, cps, working, list, rate, skin] = await Promise.all([
       read($, hud),
       read($, turn),
       read($, verify),
@@ -1805,11 +1852,15 @@ export const register: Register = (on, options) => {
       read($, busy),
       read($, tasks),
       read($, speed),
+      read($, themeName),
     ])
+    const th = themeOf(skin)
+    const ic = th.icons
+    const tint = (color: string) => paint(color, th)
     const cols = e.props.bodyColumns
     const counts = { working: 0, waiting: 0, done: 0 }
     for (const peer of now.peers) counts[peer.status] += 1
-    const gauges = hudGauges(now, rate, now.at, t.isWorking)
+    const gauges = hudGauges(now, rate, now.at, t.isWorking, ic)
     const done = await read($, work)
     const runningAgents = now.agents.filter(agent => agent.status === 'running').length
     // Two columns side by side when they fit, else one gauge per row.
@@ -1830,15 +1881,15 @@ export const register: Register = (on, options) => {
       return (
         <Text key={one.key}>
           <Text dimColor>{head}</Text>
-          {one.percent === null ? <Text>{' '.repeat(10)}</Text> : <Text color={one.color}>{bar(one.percent)}</Text>}
-          <Text color={one.color}>{pct === '' ? '  ' : pct}</Text>
+          {one.percent === null ? <Text>{' '.repeat(10)}</Text> : <Text color={tint(one.color)}>{themedBar(one.percent, th)}</Text>}
+          <Text color={tint(one.color)}>{pct === '' ? '  ' : pct}</Text>
           <Text dimColor>{one.detail}</Text>
-          {one.note === undefined ? null : <Text color={one.note.color}>{` ${one.note.text}`}</Text>}
+          {one.note === undefined ? null : <Text color={tint(one.note.color)}>{` ${one.note.text}`}</Text>}
           <Text>{pad}</Text>
         </Text>
       )
     }
-    const status = verifyLabel(v)
+    const status = verifyLabel(v, ic)
     const task = activeTask(list, now, t, v, working)
     const lastCheckpoint = cps.filter(one => one.kind === 'turn').at(-1)
     const hasStatusRow = working !== null || status !== undefined || lastCheckpoint !== undefined
@@ -1848,14 +1899,14 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         <Box flexDirection="row">
           <Text wrap="truncate-end">
-            <Text color="cyan">⎇ {now.branch ?? 'no git'}</Text>
-            {now.model !== '' && <Text> · ◆ {now.model}</Text>}
+            <Text color={th.accent}>{ic.branch} {now.branch ?? 'no git'}</Text>
+            {now.model !== '' && <Text> · {ic.model} {now.model}</Text>}
             <Text dimColor> · </Text>
-            <Text color="green">● {counts.working}{isWide ? ' working' : ''} </Text>
-            <Text color="yellow"> ● {counts.waiting}{isWide ? ' waiting' : ''} </Text>
-            <Text color="gray"> ● {counts.done}{isWide ? ' idle' : ''}</Text>
-            {runningAgents > 0 ? <Text color="magenta">{`  ⚙ ${runningAgents} agent${runningAgents === 1 ? '' : 's'}`}</Text> : null}
-            {rate?.cutoff ? <Text color="red" bold>{`  ⚠ ${rate.cutoff}`}</Text> : null}
+            <Text color={th.ok}>{ic.dot} {counts.working}{isWide ? ' working' : ''} </Text>
+            <Text color={th.warn}> {ic.dot} {counts.waiting}{isWide ? ' waiting' : ''} </Text>
+            <Text color={th.idle}> {ic.dot} {counts.done}{isWide ? ' idle' : ''}</Text>
+            {runningAgents > 0 ? <Text color={th.agent}>{`  ${ic.agent} ${runningAgents} agent${runningAgents === 1 ? '' : 's'}`}</Text> : null}
+            {rate?.cutoff ? <Text color={th.bad} bold>{`  ${ic.warn} ${rate.cutoff}`}</Text> : null}
           </Text>
         </Box>
         {gridRows.map(([one, two], index) => (
@@ -1866,14 +1917,14 @@ export const register: Register = (on, options) => {
         ))}
         {task !== undefined && (
           <Box flexDirection="row">
-            <Text color="cyan" wrap="truncate-end">
+            <Text color={th.accent} wrap="truncate-end">
               [Task: {clip(task.label, taskRoom)}
               {task.percent === undefined ? '' : ` (${task.percent}%)`}]
             </Text>
             {task.percent !== undefined && (
               <Text dimColor>
                 {'  '}
-                {bar(task.percent)} {task.count}
+                {themedBar(task.percent, th)} {task.count}
               </Text>
             )}
           </Box>
@@ -1892,24 +1943,25 @@ export const register: Register = (on, options) => {
               const answer = await $.ui
                 .ask('Roll back every file the latest turn changed?', { header: 'Rollback', options: ['Roll back', 'Cancel'] })
                 .catch(() => 'Cancel')
-              if (answer === 'Roll back') await $.command.run({ command: 'rollback', args: '' })
+              if (answer === 'Roll back') await $.command.run({ command: 'rollback-nexus', args: '' })
             }}
           />
           {isWide && (
-            <Button key="preview" plain hotkey="p" label="Preview" onPress={() => void $.command.run({ command: 'preview', args: '' })} />
+            <Button key="preview" plain hotkey="p" label="Preview" onPress={() => void $.command.run({ command: 'preview-nexus', args: '' })} />
           )}
+          {isWide && <Button key="skin" plain hotkey="t" label="Skin" onPress={() => void openPane($, PANE.theme, 'Skin')} />}
           {cfg.commitHelper && done.commitReady && now.branch !== null && (
-            <Button key="commit" plain hotkey="c" label="Commit" onPress={() => void $.command.run({ command: 'commit', args: '' })} />
+            <Button key="commit" plain hotkey="c" label="Commit" onPress={() => void $.command.run({ command: 'commit-nexus', args: '' })} />
           )}
         </Box>
         {hasStatusRow && (
           <Box flexDirection="row" columnGap={2}>
-            {working !== null && <Text color="yellow">⟳ {working}…</Text>}
+            {working !== null && <Text color={th.warn}>{ic.busy} {working}…</Text>}
             {status !== undefined && (
-              <Text {...(status.color === undefined ? { dimColor: true } : { color: status.color })}>{status.text}</Text>
+              <Text {...(status.color === undefined ? { dimColor: true } : { color: tint(status.color) })}>{status.text}</Text>
             )}
             {lastCheckpoint !== undefined && (
-              <Text dimColor>⚑ checkpoint {ago(lastCheckpoint.at, Math.max(now.at, lastCheckpoint.at))} ago</Text>
+              <Text dimColor>{ic.checkpoint} checkpoint {ago(lastCheckpoint.at, Math.max(now.at, lastCheckpoint.at))} ago</Text>
             )}
           </Box>
         )}
@@ -1925,6 +1977,7 @@ export const register: Register = (on, options) => {
     const view = await read($, hud)
     const started = (await read($, work)).agentStarts
     const chosenId = await read($, selectedPeer)
+    const th = themeOf(await read($, themeName))
     const chosen = view.peers.find(peer => peer.id === chosenId) ?? view.peers[0]
     const room = Math.max(20, e.props.bodyColumns - 34)
 
@@ -1939,7 +1992,7 @@ export const register: Register = (on, options) => {
             {...(index < 9 ? { hotkey: String(index + 1) } : {})}
             onPress={() => update($, selectedPeer, () => peer.id)}
           >
-            <Text color={DOT[peer.status]}>●</Text> {peer.id === chosen?.id ? '▸ ' : ''}
+            <Text color={paint(DOT[peer.status], th)}>{th.icons.dot}</Text> {peer.id === chosen?.id ? '▸ ' : ''}
             {clip(peer.name, 24)}
             {peer.isSelf ? ' (this)' : ''}{' '}
             <Text dimColor>
@@ -1956,7 +2009,7 @@ export const register: Register = (on, options) => {
           </Text>
         ))}
         {chosen !== undefined && (
-          <Box flexDirection="column" marginTop={1} borderStyle="round" paddingX={1}>
+          <Box flexDirection="column" marginTop={1} borderStyle={th.border} borderColor={th.idle} paddingX={1}>
             <Text bold>{chosen.name}</Text>
             <Text dimColor>
               pid {chosen.pid} · v{chosen.version} · reports "{chosen.rawStatus}" · {chosen.id}
@@ -2071,6 +2124,39 @@ export const register: Register = (on, options) => {
           <Button key="open" plain hotkey="o" label="Open live cards in browser" onPress={() => void openExternal($, set.url)} />
         </Box>
         <Text dimColor>Press a number to send that option's tokens to Claude, or choose in the browser.</Text>
+      </Box>
+    )
+  })
+
+  // Drawer: theme picker, each theme drawn in its own colors.
+  on('ui.render', { component: 'Pane', requestId: PANE.theme }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const current = themeOf(await read($, themeName))
+    const room = Math.max(12, e.props.bodyColumns - 40)
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>Skin: {current.name}</Text>
+        {THEMES.map((theme, index) => (
+          <Button
+            key={`theme-${theme.name}`}
+            plain
+            {...(index < 9 ? { hotkey: String(index + 1) } : {})}
+            onPress={async () => {
+              const picked = await setTheme($, cfg, theme.name)
+              $.ui.toast(`Skin: ${picked.name}`)
+            }}
+          >
+            {theme.name === current.name ? '▸ ' : '  '}
+            <Text color={theme.accent}>{theme.name.padEnd(8)}</Text>{' '}
+            <Text color={theme.ok}>{themedBar(40, theme, 4)}</Text>
+            <Text color={theme.warn}>{themedBar(70, theme, 3)}</Text>
+            <Text color={theme.bad}>{themedBar(90, theme, 3)}</Text>{' '}
+            <Text color={theme.agent}>{theme.icons.agent}</Text> <Text color={theme.idle}>{theme.icons.dot}</Text>{' '}
+            <Text dimColor>{clip(theme.description, room)}</Text>
+          </Button>
+        ))}
+        <Text dimColor>1-9 pick (remembered across sessions) · Esc close · /skin-nexus reset for the configured one</Text>
       </Box>
     )
   })

@@ -112,6 +112,8 @@ declare module 'claude-code' {
       tasks: NexusTask[]
       speed: NexusSpeed | null
       work: NexusWork
+      /** The theme (skin) the HUD and drawers are drawn in. */
+      theme: string
     }
   }
 }

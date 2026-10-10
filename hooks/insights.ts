@@ -165,7 +165,7 @@ export function handoffLine(record: Handoff, now: number): string {
   const bits = [`${record.files.length} file${record.files.length === 1 ? '' : 's'} changed`]
   if (open > 0) bits.push(`${open} task${open === 1 ? '' : 's'} unfinished`)
 
-  return `Last session ${agoText(record.at, now)} ago: ${bits.join(', ')}. /handoff to see or resume it.`
+  return `Last session ${agoText(record.at, now)} ago: ${bits.join(', ')}. /handoff-nexus to see or resume it.`
 }
 
 function agoText(at: number, now: number): string {

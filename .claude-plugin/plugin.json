@@ -1,6 +1,6 @@
 {
   "name": "nexus",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "eko"
   },
@@ -28,7 +28,7 @@
     "checkpoints": {
       "type": "boolean",
       "title": "Turn checkpoints",
-      "description": "Snapshot the project into a private shadow git repo before the first file change of each turn, so /rollback can undo the turn.",
+      "description": "Snapshot the project into a private shadow git repo before the first file change of each turn, so /rollback-nexus can undo the turn.",
       "default": true
     },
     "assumptionAudit": {
@@ -81,7 +81,7 @@
     "devServerUrl": {
       "type": "string",
       "title": "Dev server URL",
-      "description": "URL /preview captures. Empty: probe common localhost ports.",
+      "description": "URL /preview-nexus captures. Empty: probe common localhost ports.",
       "default": ""
     },
     "helperModel": {
@@ -111,7 +111,7 @@
     "handoff": {
       "type": "boolean",
       "title": "Session handoff",
-      "description": "Save a short summary when a session ends and show it when the next session in the project starts (/handoff).",
+      "description": "Save a short summary when a session ends and show it when the next session in the project starts (/handoff-nexus).",
       "default": true
     },
     "loopGuard": {
@@ -135,8 +135,15 @@
     "commitHelper": {
       "type": "boolean",
       "title": "Commit helper",
-      "description": "After a turn that changed files, offer a Commit button and /commit with a drafted message.",
+      "description": "After a turn that changed files, offer a Commit button and /commit-nexus with a drafted message.",
       "default": true
+    },
+    "theme": {
+      "type": "string",
+      "title": "Theme",
+      "description": "Colors, bars and icons of the HUD and drawers. /skin-nexus switches it on the fly (the pick is remembered across sessions).",
+      "options": ["default", "claude", "dracula", "nord", "ocean", "sunset", "forest", "mono", "ascii"],
+      "default": "default"
     }
   }
 }

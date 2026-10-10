@@ -117,7 +117,7 @@ describe('compaction guard and handoff', () => {
     expect(text).toContain('3h ago (4 turns)')
     expect(text).toContain('Files changed (2): src/a.ts, src/b.ts')
     expect(text).toContain('Unfinished tasks: Add tests')
-    expect(handoffLine(record, 30 * MIN)).toBe('Last session 30m ago: 2 files changed, 1 task unfinished. /handoff to see or resume it.')
+    expect(handoffLine(record, 30 * MIN)).toBe('Last session 30m ago: 2 files changed, 1 task unfinished. /handoff-nexus to see or resume it.')
   })
 })
 
