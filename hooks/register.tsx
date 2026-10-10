@@ -18,9 +18,9 @@ import type {
 } from '../types'
 import { type NexusConfig, readConfig } from './config'
 import { comparePage, designPage, isHex, tokensOf } from './design'
-import { maskSecrets } from './secrets'
+import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
-import { isMutatingCommand, scanCommand, type ShieldHit } from './shield'
+import { isMutatingCommand, mayPush, scanCommand, type ShieldHit } from './shield'
 import {
   addSample,
   cacheAge,
@@ -40,6 +40,7 @@ import { DESIGN_TOOL, EMPTY_HUD, EMPTY_WORK, IDLE_TURN, IDLE_VERIFY, PANE } from
 import {
   ago,
   applyTaskUpdate,
+  callSignature,
   clip,
   compact,
   describeInput,
@@ -206,11 +207,36 @@ async function projectPath($: Engine, path: string): Promise<string> {
 
 // ── HUD ──────────────────────────────────────────────────────────────────
 
+// The machine's running process ids, read at most every 20 seconds.
+let liveRead: { at: number; pids: Set<number> | null } = { at: 0, pids: null }
+
+/** Every running process id, or null when they cannot be read (then no session is hidden). */
+async function livePids($: Engine): Promise<Set<number> | null> {
+  const now = await $.clock.now()
+  if (now - liveRead.at < 20_000) return liveRead.pids
+  let pids: Set<number> | null = null
+  try {
+    const run = (await isWindows($))
+      ? await $.process.run(['tasklist', '/FO', 'CSV', '/NH'], { timeoutMs: 8000 })
+      : await $.process.run(['ps', '-A', '-o', 'pid='], { timeoutMs: 8000 })
+    if (run.exitCode === 0) {
+      const found = [...run.stdout.matchAll(/^(?:"[^"]*",")?\s*(\d+)/gm)].map(match => Number(match[1]))
+      pids = found.length > 0 ? new Set(found) : null
+    }
+  } catch {
+    // no process list here: show every session file
+  }
+  liveRead = { at: now, pids }
+
+  return pids
+}
+
 /** Reads the session file every running Claude Code process keeps under ~/.claude/sessions. */
 async function readPeers($: Engine): Promise<NexusPeer[]> {
   const dir = `${await homeDir($)}/.claude/sessions`
   const selfId = await $.session.id()
   const own = await read($, turn)
+  const alive = await livePids($)
   let entries: Awaited<ReturnType<Engine['fs']['list']>>
   try {
     entries = await $.fs.list(dir)
@@ -225,6 +251,9 @@ async function readPeers($: Engine): Promise<NexusPeer[]> {
       const id = String(raw.sessionId ?? '')
       if (id === '') continue
       const isSelf = id === selfId
+      const pid = Number(raw.pid ?? 0)
+      // A file left behind by a session that crashed or was killed.
+      if (!isSelf && alive !== null && pid > 0 && !alive.has(pid)) continue
       const rawStatus = String(raw.status ?? 'idle')
       const status: NexusPeerStatus = isSelf
         ? own.isWaiting
@@ -235,7 +264,7 @@ async function readPeers($: Engine): Promise<NexusPeer[]> {
         : peerStatus(rawStatus)
       peers.push({
         id,
-        pid: Number(raw.pid ?? 0),
+        pid,
         name: String(raw.name ?? id.slice(0, 8)),
         cwd: slash(String(raw.cwd ?? '')),
         rawStatus,
@@ -362,15 +391,57 @@ async function snapshot(
   if (added.exitCode !== 0 && !/warning/i.test(added.stderr)) {
     throw new Error(`snapshot failed: ${added.stderr.trim().slice(0, 300)}`)
   }
-  const committed = await shadowGit($, ['commit', '-q', '--allow-empty', '--no-verify', '-m', label], 60_000)
+  const tree = await shadowGit($, ['write-tree'], 60_000)
+  if (tree.exitCode !== 0) throw new Error(`snapshot tree failed: ${tree.stderr.trim()}`)
+  // A commit with no parent, held by a ref of its own: dropping the ref lets
+  // gc free that snapshot, which a chain of commits on a branch never allows.
+  const committed = await shadowGit($, ['commit-tree', tree.stdout.trim(), '-m', label], 30_000)
   if (committed.exitCode !== 0) throw new Error(`snapshot commit failed: ${committed.stderr.trim()}`)
-  const head = await shadowGit($, ['rev-parse', 'HEAD'], 10_000)
-  const checkpoint: NexusCheckpoint = { sha: head.stdout.trim(), label, at, turnId, kind }
-  const list = [...(await listCheckpoints($)), checkpoint].slice(-KEEP_CHECKPOINTS)
+  const sha = committed.stdout.trim()
+  const held = await shadowGit($, ['update-ref', `${CHECKPOINT_REF}${sha}`, sha], 10_000)
+  if (held.exitCode !== 0) throw new Error(`snapshot ref failed: ${held.stderr.trim()}`)
+  const checkpoint: NexusCheckpoint = { sha, label, at, turnId, kind }
+  const before = await listCheckpoints($)
+  const list = [...before, checkpoint].slice(-KEEP_CHECKPOINTS)
   await $.store.set(await checkpointsKey($), list)
   await update($, checkpoints, () => list)
+  for (const dropped of before) {
+    if (!list.some(one => one.sha === dropped.sha)) {
+      await shadowGit($, ['update-ref', '-d', `${CHECKPOINT_REF}${dropped.sha}`], 10_000).catch(() => undefined)
+    }
+  }
 
   return checkpoint
+}
+
+const CHECKPOINT_REF = 'refs/nexus/checkpoints/'
+const PRUNE_EVERY_MS = 7 * 86_400_000
+
+/**
+ * Frees the snapshots no checkpoint keeps, at most once a week per project.
+ * Snapshots made before 0.3.1 sit on a branch whose chain keeps all of them;
+ * the kept ones get refs of their own first, then the branch goes.
+ */
+async function pruneShadow($: Engine): Promise<void> {
+  if (!(await $.fs.exists(`${await shadowDir($)}/HEAD`))) return
+  const key = `shadowPrunedAt.${await shortHash(await projectRoot($))}`
+  const now = await $.clock.now()
+  const last = await $.store.get(key).catch(() => null)
+  if (typeof last === 'number' && now - last < PRUNE_EVERY_MS) return
+  await $.store.set(key, now)
+  let isHeld = true
+  for (const one of await listCheckpoints($)) {
+    const held = await shadowGit($, ['update-ref', `${CHECKPOINT_REF}${one.sha}`, one.sha], 10_000)
+    isHeld = isHeld && held.exitCode === 0
+  }
+  if (isHeld) {
+    const heads = await shadowGit($, ['for-each-ref', '--format=%(refname)', 'refs/heads/'], 10_000)
+    for (const ref of heads.stdout.split('\n').map(line => line.trim()).filter(Boolean)) {
+      await shadowGit($, ['update-ref', '-d', ref], 10_000)
+    }
+  }
+  // Not --prune=now: another session's snapshot may be between its tree and its ref.
+  await shadowGit($, ['gc', '--quiet', '--prune=1.hour.ago'], 600_000)
 }
 
 /** Puts the working tree back to `target`, after a safety snapshot of the present. */
@@ -409,6 +480,10 @@ async function restore($: Engine, target: NexusCheckpoint) {
 
 async function runRollback($: Engine, args: string): Promise<string> {
   const arg = args.trim().toLowerCase()
+  // Anything else is a typo, never a rollback: restoring the wrong checkpoint costs work.
+  if (arg !== '' && arg !== 'list' && arg !== 'undo' && !/^[1-9]\d*$/.test(arg)) {
+    return `Nothing rolled back: "${clip(args.trim(), 40)}" is not a choice. Use /rollback-nexus (the latest turn), /rollback-nexus <n> (a number from /rollback-nexus list), /rollback-nexus list, or /rollback-nexus undo.`
+  }
   const all = await listCheckpoints($)
   const now = await $.clock.now()
   const turns = all.filter(one => one.kind === 'turn')
@@ -425,14 +500,14 @@ async function runRollback($: Engine, args: string): Promise<string> {
     ].join('\n')
   }
   if ((await read($, turn)).isWorking) return 'A turn is still running. Let it finish (or press Esc), then roll back.'
-  const target =
-    arg === 'undo'
-      ? all.filter(one => one.kind === 'safety').at(-1)
-      : turns.at(-Math.max(1, Number.parseInt(arg, 10) || 1))
+  const back = arg === '' || arg === 'undo' ? 1 : Number(arg)
+  const target = arg === 'undo' ? all.filter(one => one.kind === 'safety').at(-1) : turns.at(-back)
   if (target === undefined) {
-    return arg === 'undo'
-      ? 'There is no rollback to undo.'
-      : 'No checkpoint yet: nothing has changed since Nexus started watching this project.'
+    if (arg === 'undo') return 'There is no rollback to undo.'
+
+    return turns.length === 0
+      ? 'No checkpoint yet: nothing has changed since Nexus started watching this project.'
+      : `Nothing rolled back: there ${turns.length === 1 ? 'is 1 checkpoint' : `are ${turns.length} checkpoints`}. See /rollback-nexus list.`
   }
   await update($, busy, () => 'Rolling back')
   try {
@@ -1076,6 +1151,66 @@ async function confirmDanger($: Engine, tool: string, command: string, hits: rea
   }
 }
 
+/** The text a call would write into a file or a shell, and the text an edit must find. */
+function writesOf(tool: string, e: unknown): { path?: string; written: string[]; matched: string[] } {
+  const input = e as Record<string, unknown>
+  const text = (value: unknown) => (typeof value === 'string' ? [value] : [])
+  const path = field(e, 'file_path') ?? field(e, 'notebook_path')
+  if (SHELL_TOOLS.has(tool)) return { written: text(input.command), matched: [] }
+  if (tool === 'Write') return { path, written: text(input.content), matched: [] }
+  if (tool === 'Edit') return { path, written: text(input.new_string), matched: text(input.old_string) }
+  if (tool === 'NotebookEdit') return { path, written: text(input.new_source), matched: [] }
+  if (tool === 'MultiEdit' && Array.isArray(input.edits)) {
+    const edits = input.edits as Record<string, unknown>[]
+
+    return { path, written: edits.flatMap(one => text(one.new_string)), matched: edits.flatMap(one => text(one.old_string)) }
+  }
+
+  return { written: [], matched: [] }
+}
+
+function carriesMask(tool: string, e: unknown): boolean {
+  const { written, matched } = writesOf(tool, e)
+
+  return [...written, ...matched].some(text => masksIn(text).length > 0)
+}
+
+const MASK_ALLOW = 'Write the mask anyway'
+
+/**
+ * Keeps a mask the sanitizer put over a secret from being written back in the
+ * secret's place: Claude saw only the mask, so a file it rewrites from what it
+ * read would lose the real value. A mask the file already holds on disk (a
+ * test of the sanitizer, say) is the file's own text and passes.
+ */
+async function guardMasks($: Engine, tool: string, e: unknown): Promise<string | undefined> {
+  if (!carriesMask(tool, e)) return undefined
+  const { path, written, matched } = writesOf(tool, e)
+  const onDisk = path === undefined ? '' : await $.fs.read(path).catch(() => '')
+  const foreign = (texts: readonly string[]) => [...new Set(texts.flatMap(masksIn))].filter(mask => !onDisk.includes(mask))
+  const inMatch = foreign(matched)
+  if (inMatch.length > 0) {
+    return `Nexus: old_string contains ${inMatch.join(', ')}, a mask Nexus put over a secret when you read the file. The file on disk holds the real value, so this can never match. Choose an old_string that stops short of the masked value, or ask the user to edit that line.`
+  }
+  const masks = foreign(written)
+  if (masks.length === 0) return undefined
+  const where = path === undefined ? '' : ` into ${clip(await projectPath($, path), 80)}`
+  await setWaiting($, true)
+  try {
+    const answer = await $.ui.ask(
+      `⚠ SECRET MASK: this ${tool} would write ${masks.join(', ')}${where}.\n\nNexus hid that secret from Claude, so the mask would take the real value's place. Let it write the mask anyway?`,
+      { header: 'Secrets', options: [BLOCK, MASK_ALLOW] },
+    )
+    if (answer === MASK_ALLOW) return undefined
+  } catch {
+    // nobody to ask: keep the secret
+  } finally {
+    await setWaiting($, false)
+  }
+
+  return `Nexus blocked this ${tool}: it would write ${masks.join(', ')} where a real secret was. Nexus masked that secret when you read it, so you do not know its value. Leave the lines that hold secrets untouched (change the other lines with Edit instead of rewriting the file), or ask the user to fill the value in themselves.`
+}
+
 const AUDIT_RULES = `You review a coding assistant's intended work for UNSTATED assumptions: implicit architecture choices, library or pattern picks, data or API shapes, scope interpretations, UI decisions, or file locations the user never specified.
 Return JSON only, no prose: {"assumptions": ["...", "..."]}
 - At most 4 items, the ones that would be most costly if wrong. Fewer is better; [] when nothing material is assumed.
@@ -1342,7 +1477,7 @@ function verifyLabel(v: NexusVerify, icons: Theme['icons']): { text: string; col
 const COMMANDS = [
   { name: 'sessions-nexus', description: 'Nexus: every Claude Code session on this machine; inspect, pause or message one', immediate: true },
   { name: 'idea-nexus', description: 'Nexus: capture an idea to .claude/ideas.md without interrupting Claude', argumentHint: '[text]', immediate: true },
-  { name: 'rollback-nexus', description: 'Nexus: undo the files the latest turn changed', argumentHint: '[list | n | undo]' },
+  { name: 'rollback-nexus', description: 'Nexus: put the project back as it was before the latest turn (your own edits since then too)', argumentHint: '[list | n | undo]' },
   { name: 'preview-nexus', description: 'Nexus: before/after screenshots of the frontend dev server', argumentHint: '[url] [base]' },
   { name: 'nexus', description: 'Nexus: status of every module and the keys' },
   { name: 'handoff-nexus', description: 'Nexus: what the last session in this project did, so Claude can pick it up' },
@@ -1453,6 +1588,7 @@ export const register: Register = (on, options) => {
     await update($, themeName, () => picked)
     const saved = await listCheckpoints($)
     await update($, checkpoints, () => saved)
+    if (cfg.checkpoints) void pruneShadow($).catch(() => undefined)
     await loadIdeas($)
     void refreshHud($, true).catch(() => undefined)
     $.clock.every(4000, () => {
@@ -1554,13 +1690,19 @@ export const register: Register = (on, options) => {
 
     // 1. Command Shield
     if (command !== undefined && cfg.shield) {
-      const branch = /\bgit\s+push\b/.test(command) ? await currentBranch($) : null
+      const branch = mayPush(command) ? await currentBranch($) : null
       const hits = shieldHits(tool, command, branch)
       if (hits.length > 0 && !(await confirmDanger($, tool, command, hits))) {
         return {
           deny: `Nexus Command Shield blocked this command: it ${hits.map(hit => hit.why).join('; ')}. The user declined it. Find a safer way, or ask the user to run it themselves.`,
         }
       }
+    }
+
+    // 1b. Secret masks: never written back over the real secret
+    if (cfg.sanitizer) {
+      const verdict = await guardMasks($, tool, e)
+      if (verdict !== undefined) return { deny: verdict }
     }
 
     // 2. Assumption review, before the plan is shown or the first edit lands
@@ -1614,7 +1756,7 @@ export const register: Register = (on, options) => {
       const result = await next(e)
       if (!cfg.loopGuard || !isMain) return result
       // 5. Loop detector: the same call failing, or made, over and over
-      const step = trackCall(loop, `${tool}:${clip(describeInput(e), 200)}`, result.deny !== undefined || result.isError === true)
+      const step = trackCall(loop, callSignature(e), result.deny !== undefined || result.isError === true)
       loop = step.state
       if (step.verdict === 'none') return result
       const note =
@@ -1634,6 +1776,9 @@ export const register: Register = (on, options) => {
     // The guard failed, or was asked from beneath its own call: judge from `e` alone.
     if (shieldHits(tool, SHELL_TOOLS.has(tool) ? field(e, 'command') : undefined, null).length > 0) {
       return { deny: 'Nexus Command Shield could not confirm this dangerous command with the user, so it was blocked.' }
+    }
+    if (cfg.sanitizer && carriesMask(tool, e)) {
+      return { deny: 'Nexus could not check this call for secret masks (…[REDACTED:…]), so it was blocked to keep the real secret. Leave the masked value out of what you write.' }
     }
 
     return next(e)
@@ -1786,8 +1931,14 @@ export const register: Register = (on, options) => {
   })
 
   // ── Attention alert: Claude waits on the person (a permission, a question) ─
+  let attentionAt = 0
   on('classic.Notification', async ($, e, next) => {
-    if (cfg.notify) void playSound($, 'attention')
+    const now = await $.clock.now()
+    // One sound per wait: idle reminders and repeats inside 30 s stay quiet.
+    if (cfg.notify && now - attentionAt > 30_000) {
+      attentionAt = now
+      void playSound($, 'attention')
+    }
 
     return next(e)
   })
@@ -1994,7 +2145,7 @@ export const register: Register = (on, options) => {
             label={isWide ? 'Rollback' : 'Undo'}
             onPress={async () => {
               const answer = await $.ui
-                .ask('Roll back every file the latest turn changed?', { header: 'Rollback', options: ['Roll back', 'Cancel'] })
+                .ask('Put the project back as it was before the latest turn? Edits you made since then are undone too (/rollback-nexus undo brings them back).', { header: 'Rollback', options: ['Roll back', 'Cancel'] })
                 .catch(() => 'Cancel')
               if (answer === 'Roll back') await $.command.run({ command: 'rollback-nexus', args: '' })
             }}
@@ -2080,7 +2231,9 @@ export const register: Register = (on, options) => {
                 hotkey="c"
                 label="Copy resume command"
                 onPress={async press => {
-                  const copied = await $.ui.copy({ text: `cd "${chosen.cwd}" && claude --resume ${chosen.id}`, surface: press.surface })
+                  // `;` on Windows: PowerShell 5.1 has no `&&`.
+                  const then = (await isWindows($)) ? ';' : ' &&'
+                  const copied = await $.ui.copy({ text: `cd "${chosen.cwd}"${then} claude --resume ${chosen.id}`, surface: press.surface })
                   $.ui.toast(copied.isCopied ? 'Copied: paste it in another terminal to switch' : 'Copy failed')
                 }}
               />

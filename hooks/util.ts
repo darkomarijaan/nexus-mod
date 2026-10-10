@@ -58,6 +58,14 @@ export function describeInput(input: unknown): string {
   return ''
 }
 
+/** What makes two tool calls the same call: the tool and every argument, never the call's own id. */
+export function callSignature(input: unknown): string {
+  if (input === null || typeof input !== 'object') return String(input)
+  const { tool_use_id: _id, agentId: _agent, requestMeta: _meta, ...call } = input as Record<string, unknown>
+
+  return JSON.stringify(call)
+}
+
 /** Maps the status a session file reports to the HUD's three lights. */
 export function peerStatus(raw: string): 'working' | 'waiting' | 'done' {
   const status = raw.toLowerCase()

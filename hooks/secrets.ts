@@ -55,6 +55,14 @@ function masked(value: string, kind: string): string {
   return `${value.slice(0, 4)}…${MARK}${kind}]`
 }
 
+/**
+ * The masks in `text`, as `…[REDACTED:kind]`. Claude only ever sees a masked
+ * secret, so a mask in what it writes stands where the real value was.
+ */
+export function masksIn(text: string): string[] {
+  return [...new Set(text.match(/…\[REDACTED:[a-z0-9-]+\]/g) ?? [])]
+}
+
 /** Masks every credential-shaped value in `text`, keeping its first four characters. */
 export function maskSecrets(text: string): MaskResult {
   let out = text

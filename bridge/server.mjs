@@ -18,13 +18,36 @@ const TYPES = {
   '.json': 'application/json',
 }
 
+const MAX_BODY = 65536
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  const port = server.address()?.port
+  // Only our own pages: a Host other than ours is DNS rebinding, an Origin
+  // other than ours is another site posting a pick.
+  if (req.headers.host !== `127.0.0.1:${port}` && req.headers.host !== `localhost:${port}`) {
+    res.writeHead(403).end('forbidden')
+    return
+  }
   if (req.method === 'POST' && url.pathname === '/select') {
+    const origin = req.headers.origin
+    if (origin !== undefined && origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) {
+      res.writeHead(403).end('forbidden')
+      return
+    }
+    // A JSON body needs a CORS preflight from any other origin, which nothing here answers.
+    if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) {
+      res.writeHead(415).end('json only')
+      return
+    }
     let body = ''
     for await (const chunk of req) {
       body += chunk
-      if (body.length > 65536) break
+      if (body.length > MAX_BODY) {
+        res.writeHead(413).end('too large')
+        req.destroy()
+        return
+      }
     }
     try {
       const data = JSON.parse(body)

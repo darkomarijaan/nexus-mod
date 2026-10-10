@@ -7,7 +7,7 @@ An all-in-one workspace suite for Claude Code:
 - **Prompt enhancer**: turns a rough prompt into Goal / Context / Acceptance criteria.
 - **Assumption review**: before a plan is shown, you confirm or correct the assumptions Claude made.
 - **Command Shield**: asks before dangerous shell commands run.
-- **Secret masking**: hides API keys, tokens and passwords before they are stored or sent.
+- **Secret masking**: hides API keys, tokens and passwords before they are stored or sent, and stops Claude from writing a mask back over the real secret.
 - **Turn checkpoints** with `/rollback-nexus`.
 - **Design Lens**: UI options shown as live visual cards in your browser.
 - **Auto lint/test** with self-healing.
@@ -63,7 +63,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `/nexus` | Status of every module, and the keys |
 | `/sessions-nexus` | Every Claude Code session on this machine: inspect, ask one to pause, message it, copy its resume command |
 | `/idea-nexus <text>` | Save an idea to `.claude/ideas.md` without interrupting Claude (no text opens the scratchpad) |
-| `/rollback-nexus` | Undo the files the latest turn changed. Also `/rollback-nexus list`, `/rollback-nexus 3`, `/rollback-nexus undo` |
+| `/rollback-nexus` | Put the project back as it was before the latest turn (edits you made since are undone too). Also `/rollback-nexus list`, `/rollback-nexus 3`, `/rollback-nexus undo` |
 | `/preview-nexus [url]` | Screenshot the dev server; run it again after changes for a before/after comparison |
 | `/handoff-nexus` | What the last session in this project did; Claude reads it too, so it can pick the work up |
 | `/commit-nexus` | Commit every change in the work tree with a drafted message, after you confirm it |
@@ -93,7 +93,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Setting | Default | What it controls |
 |---|---|---|
 | Command Shield | on | Ask before dangerous commands |
-| Protected branches | `main,master,production,release` | Branches guarded against pushes |
+| Protected branches | `main,master,production,release` | Branches guarded against pushes; `*` matches any part (`release/*`) |
 | Secret Leak Sanitizer | on | Mask credentials |
 | Turn checkpoints | on | Snapshot before each turn's first change |
 | Assumption review | `plan` | `plan`, `first-edit` or `off` |
@@ -118,7 +118,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 
 ## Where it keeps things
 
-- Checkpoints live in a private shadow git repo under `~/.claude/nexus/shadow/`. Your project's own `.git` is never touched.
+- Checkpoints live in a private shadow git repo under `~/.claude/nexus/shadow/`. Your project's own `.git` is never touched. The last 40 are kept; older ones are freed at most once a week.
 - Rollback does not cover `node_modules`, `dist`, `build`, `.venv` or other build folders.
 - Previews and screenshots are written to `~/.claude/nexus/previews/`.
 - Session handoffs are kept in the plugin's own store, one per project; nothing is written into your project.

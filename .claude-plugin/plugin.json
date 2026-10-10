@@ -1,6 +1,6 @@
 {
   "name": "nexus",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": {
     "name": "eko"
   },
@@ -16,7 +16,7 @@
     "protectedBranches": {
       "type": "string",
       "title": "Protected branches",
-      "description": "Comma-separated branch names the shield guards against pushes.",
+      "description": "Comma-separated branch names the shield guards against pushes; * matches any part (release/*).",
       "default": "main,master,production,release"
     },
     "sanitizer": {
