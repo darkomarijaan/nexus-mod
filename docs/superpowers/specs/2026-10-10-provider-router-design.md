@@ -54,11 +54,11 @@ claude-nexus.cmd ──► bridge/claude-nexus.mjs (launcher, satu proses Node)
 
 ### 3.1 Launcher (`bridge/claude-nexus.mjs`, pembungkus `bin/claude-nexus.cmd` dan `bin/claude-nexus` untuk sh)
 
-1. Membuat token acak (32 byte, hex) dan menyalakan router di `127.0.0.1` port acak.
+1. Membuat dua token acak (32 byte, hex): token inferensi dan token kontrol, lalu menyalakan router di `127.0.0.1` port acak.
 2. Menjalankan `claude` dengan argumen yang diberikan pengguna (mis. `--resume <id>`), stdio diwariskan, dan env tambahan:
    - `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`
-   - `ANTHROPIC_CUSTOM_HEADERS=x-nexus-router: <token>`
-   - `NEXUS_ROUTER_TOKEN=<token>`
+   - `ANTHROPIC_CUSTOM_HEADERS=x-nexus-router: <token inferensi>` (digabung dengan nilai yang sudah ada, dipisah baris baru)
+   - `NEXUS_ROUTER_TOKEN=<token kontrol>`
 3. Tidak mengisi `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`, sehingga login claude.ai tetap menjadi kredensial (connector dan kuota langganan tetap jalan di rute Claude).
 4. Keluar dengan kode keluar `claude`; router mati bersama proses launcher.
 
@@ -69,7 +69,7 @@ Satu router per sesi; sesi-sesi tidak berbagi state router.
 **Penerimaan permintaan**
 
 - Hanya `Host` `127.0.0.1:<port>` / `localhost:<port>`; lainnya 403.
-- Semua permintaan wajib membawa `x-nexus-router: <token>` (perbandingan aman-timing); tanpa itu 401. Header ini dibuang sebelum diteruskan.
+- Permintaan model wajib membawa `x-nexus-router: <token inferensi>`, endpoint `/__nexus/*` wajib membawa `x-nexus-control: <token kontrol>` (perbandingan aman-timing); tanpa itu 401. Kedua header dibuang sebelum diteruskan.
 
 **Tabel rute** (rute aktif disimpan di memori router; default `claude`)
 
@@ -86,11 +86,11 @@ Satu router per sesi; sesi-sesi tidak berbagi state router.
 
 - **Header (daftar izin):** `content-type`, `accept`, `anthropic-version`, `anthropic-beta` (tanpa nilai beta OAuth, mis. `oauth-*`). Ditambah `x-api-key: <key>` dan `authorization: Bearer <key>`. Semua header lain, termasuk `authorization` asli dan cookie, dibuang.
 - **`model`:** dipetakan per tingkat. Tingkat ditentukan dari nama model Claude (`opus`, `sonnet`, `haiku`; tidak cocok → `sonnet`). Tingkat yang kosong di profil diisi model terisi pertama dengan urutan opus → sonnet → haiku.
-- **Blok thinking:** ke hub, blok `thinking`/`redacted_thinking` pada pesan assistant dibuang. Ke Claude (rute claude, hanya bila riwayat berisi turn dari hub), blok thinking tanpa `signature` yang valid dibuang. Ini satu-satunya perubahan body di rute Claude, dan hanya terjadi setelah sesi pernah memakai hub.
-- **ID tool:** ID `tool_use`/`tool_use_id` yang tidak cocok `^[a-zA-Z0-9_-]+$` diganti secara konsisten (pemetaan disimpan per sesi) sebelum dikirim ke Claude.
+- **Blok thinking:** ke hub, blok `thinking`/`redacted_thinking` pada pesan assistant dibuang. Ke Claude body tidak diubah: bila API menolak tanda tangan thinking dari riwayat campuran, Claude Code sendiri membuang blok thinking lama dan mengulang permintaan (docs llm-gateway-protocol, "Automatic retry and error forwarding").
+- **ID tool:** hanya setelah sesi pernah memakai hub, ID `tool_use`/`tool_use_id` yang tidak cocok `^[a-zA-Z0-9_-]+$` diganti secara deterministik (karakter lain → `_`, sama di `tool_use` dan `tool_result`) sebelum dikirim ke Claude; body yang ID-nya sudah valid diteruskan byte demi byte.
 - Field lain (system, tools, `cache_control`, metadata) tidak diubah.
 
-### 3.4 Endpoint kontrol (`/__nexus/*`, wajib token, tanpa CORS)
+### 3.4 Endpoint kontrol (`/__nexus/*`, wajib token kontrol, tanpa CORS)
 
 | Endpoint | Fungsi |
 |---|---|
@@ -161,7 +161,7 @@ Semua permintaan model sesi lewat router: percakapan utama, subagent, helper Nex
 
 1. Token claude.ai tidak pernah ke hub (daftar izin header, §3.3); key hub tidak pernah ke Anthropic.
 2. Router: hanya `127.0.0.1`, pemeriksaan `Host`, token per peluncuran wajib di setiap permintaan, endpoint kontrol tanpa CORS dan tidak pernah mengembalikan key.
-3. Env: setelah membacanya di `session.start`, Nexus mengosongkan `NEXUS_ROUTER_TOKEN` dengan `$.env.set` sehingga tool (Bash) tidak mewarisinya. `ANTHROPIC_CUSTOM_HEADERS` juga dikosongkan **bila** uji §8 membuktikan Claude Code tetap mengirim header tersebut; bila tidak, token tetap terlihat oleh tool (key hub tetap tidak pernah ada di env).
+3. Dua token per peluncuran: **token inferensi** (header `x-nexus-router`, lewat `ANTHROPIC_CUSTOM_HEADERS`, wajib di permintaan model) dan **token kontrol** (header `x-nexus-control`, lewat `NEXUS_ROUTER_TOKEN`, wajib di `/__nexus/*`). Setelah membacanya di `session.start` (dan menyimpannya di state sesi agar selamat dari hot reload), Nexus mengosongkan `NEXUS_ROUTER_TOKEN` dengan `$.env.set`, sehingga tool tidak pernah bisa mengganti rute, membaca status, atau memutuskan permintaan yang ditahan. Token inferensi tetap terlihat oleh tool (Claude Code membutuhkannya di env); paling jauh tool bisa mengirim permintaan model lewat router. Key hub tidak pernah ada di env.
 4. Log router: hanya metode, path, status, rute, durasi.
 5. HUD selalu menampilkan `⇄` saat rute hub aktif (data dikirim ke hub dan provider di belakangnya). Shield dan sanitizer tetap berlaku.
 
@@ -183,7 +183,7 @@ Semua permintaan model sesi lewat router: percakapan utama, subagent, helper Nex
 
 1. Hub menerima permintaan Claude Code dalam mode login OAuth (beta OAuth dilepas) — uji e2e sebelumnya memakai mode `ANTHROPIC_AUTH_TOKEN`.
 2. Riwayat campuran Claude ↔ hub (blok thinking, ID tool) diterima kedua sisi.
-3. `ANTHROPIC_CUSTOM_HEADERS` tetap dikirim setelah env dikosongkan.
+3. Claude Code mengirim header dari `ANTHROPIC_CUSTOM_HEADERS` pada setiap permintaan model (termasuk subagent dan compaction).
 4. Peringatan "model tidak dikenal katalog" tidak muncul di rute hub (Claude Code tetap melihat nama model Claude; router yang mengganti).
 5. Nilai persis header `anthropic-ratelimit-unified-*` yang membedakan limit paket dari throttle sesaat; dipastikan dari docs llm-gateway-protocol dan respons 429 sungguhan sebelum §5.2 diimplementasikan.
 
