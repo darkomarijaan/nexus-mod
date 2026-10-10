@@ -231,3 +231,32 @@ describe('turn footer', () => {
     expect(done.text).toBe('⏱ 1m 5s · 1 tool')
   })
 })
+
+describe('prompt keys as commands', () => {
+  test('/enhance-nexus puts the rewrite in the prompt box', { options: BASE }, async ($, on) => {
+    const filled: string[] = []
+    let asked = ''
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('fs.read', () => ({ value: '' }))
+    on('fs.list', () => ({ value: [] }))
+    on('command.list', () => ({ value: [] }) as never)
+    on('prompt.read', () => ({ value: { text: '', cursor: 0 } }))
+    on('model.complete', (_, e) => {
+      asked = String((e as { prompt?: unknown }).prompt ?? '')
+      return { value: { isAnswered: true, text: 'Goal: a CSV export on the orders page', usage: {} } } as never
+    })
+    on('prompt.fill', (_, e) => {
+      filled.push(e.text)
+      return { isFilled: true } as never
+    })
+    const answer = await $.command.run({ command: 'enhance-nexus', args: 'csv export di halaman order' } as never)
+    for (let i = 0; i < 2000 && filled.length === 0; i++) await Promise.resolve()
+    expect(answer.text).toContain('prompt box')
+    expect(asked).toContain('csv export di halaman order')
+    expect(filled).toEqual(['Goal: a CSV export on the orders page'])
+  })
+
+  test('/enhance-nexus with nothing after it says how to use it', { options: BASE }, async $ => {
+    expect((await $.command.run({ command: 'enhance-nexus', args: '' } as never)).text).toContain('/enhance-nexus add a CSV export')
+  })
+})

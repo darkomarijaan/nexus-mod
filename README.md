@@ -72,6 +72,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `/preview-nexus [url]` | Screenshot the dev server; run it again after changes for a before/after comparison |
 | `/handoff-nexus` | What the last session in this project did; Claude reads it too, so it can pick the work up |
 | `/commit-nexus` | Commit every change in the work tree with a drafted message, after you confirm it |
+| `/enhance-nexus <rough prompt>` | Rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box, to read before sending |
 | `/context-nexus` | Where the context goes before you type, and what could go |
 | `/mcp-nexus` | MCP servers in this project; `/mcp-nexus off <server>`, `/mcp-nexus on <server>` |
 | `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
@@ -89,7 +90,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `t` | Skin (on a wide terminal) |
 | `c` | Commit (shown after a turn that changed files, in a git repo) |
 
-So `ctrl+x tab s` opens Sessions, `ctrl+x tab i` the idea pad, `ctrl+x tab z` rolls back. A mod cannot take a bare `ctrl+z` or a `ctrl+x s` chord in this Claude Code build, so the keys go through the bar.
+So `ctrl+x tab s` opens Sessions, `ctrl+x tab i` the idea pad, `ctrl+x tab z` rolls back. Press `ctrl+x`, let go, then `tab`: `ctrl+x` alone shows nothing. In VS Code's terminal, turn on `terminal.integrated.sendKeybindingsToShell` if `ctrl+x tab` does not reach Claude Code. Every key also has a command (`/enhance-nexus`, `/sessions-nexus`, `/idea-nexus`, `/rollback-nexus`, `/preview-nexus`, `/skin-nexus`, `/commit-nexus`). A mod cannot take a bare `ctrl+z` or a `ctrl+x s` chord in this Claude Code build, so the keys go through the bar.
 
 The quotas show on a Claude subscription once the first reply of the session arrives; on an API key there are none to show.
 

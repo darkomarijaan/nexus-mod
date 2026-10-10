@@ -678,8 +678,14 @@ async function projectContext($: Engine): Promise<string> {
   return lines.join('\n')
 }
 
-async function enhancePrompt($: Engine, cfg: NexusConfig): Promise<void> {
-  const draft = await $.prompt.read()
+/**
+ * Rewrites a rough prompt as Goal / Context / Acceptance criteria into the
+ * prompt box, for the person to read before sending. `given` is the text of
+ * /enhance-nexus; without it, the box's own draft.
+ */
+async function enhancePrompt($: Engine, cfg: NexusConfig, given?: string): Promise<void> {
+  const box = await $.prompt.read()
+  const draft = given === undefined ? box : { text: given }
   if (draft.text.trim() === '') {
     $.ui.toast('Type a rough prompt first, then Enhance.')
     return
@@ -697,7 +703,7 @@ async function enhancePrompt($: Engine, cfg: NexusConfig): Promise<void> {
       $.ui.toast(`Enhance failed (${result.reason}). Your prompt is unchanged.`)
       return
     }
-    if ((await $.prompt.read()).text !== draft.text) {
+    if ((await $.prompt.read()).text !== box.text) {
       $.ui.toast('The prompt changed while enhancing; kept your edits.')
       return
     }
@@ -714,7 +720,8 @@ async function sendPrompt($: Engine): Promise<void> {
     return
   }
   await $.prompt.fill({ text: '', mode: 'replace' })
-  await $.prompt.submit({ text: draft.text })
+  // The person's own words, as if Enter sent them: no "the nexus plugin sent a message" frame.
+  await $.prompt.submit({ text: draft.text, asUser: true })
 }
 
 // ── Idea scratchpad ──────────────────────────────────────────────────────
@@ -1634,6 +1641,7 @@ const COMMANDS = [
   { name: 'handoff-nexus', description: 'Nexus: what the last session in this project did, so Claude can pick it up' },
   { name: 'commit-nexus', description: 'Nexus: commit the work tree with a drafted message, after you confirm it' },
   { name: 'skin-nexus', description: 'Nexus: change the skin (theme) of the HUD and drawers', argumentHint: '[name | list | reset]', immediate: true },
+  { name: 'enhance-nexus', description: 'Nexus: rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box', argumentHint: '<rough prompt>', immediate: true },
   { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
 ] as const
@@ -1708,6 +1716,7 @@ function statusText(cfg: NexusConfig, theme: string): string {
     'Keys: ctrl+x tab focuses the bar above the prompt, then',
     '  e Enhance   g Send   s Sessions   i Idea   z Rollback   p Preview   t Skin   c Commit',
     '  (so ctrl+x tab s opens Sessions, ctrl+x tab z rolls back)',
+    '  The same without the keys: /enhance-nexus <prompt>, /sessions-nexus, /idea-nexus, /rollback-nexus, /preview-nexus, /skin-nexus, /commit-nexus',
     'Turn any module on or off: /plugin configure nexus@nexus-mod',
   ].join('\n')
 }
@@ -1796,6 +1805,13 @@ export const register: Register = (on, options) => {
     if (breakdown === undefined) return { text: 'No context breakdown yet: send one message first, then run /context-nexus again.' }
 
     return { text: contextReport(breakdown, mcpOff, await projectRoot($)) }
+  })
+
+  on('command.run', { command: 'enhance-nexus' }, async ($, e) => {
+    if (e.args.trim() === '') return { text: 'Write the rough prompt after the command: /enhance-nexus add a CSV export to the orders page. The rewrite lands in the prompt box for you to read before sending.' }
+    void enhancePrompt($, cfg, e.args).catch(() => undefined)
+
+    return { text: `Enhancing with ${cfg.helperModel}; the rewrite lands in the prompt box in a few seconds. Read it, edit it, then press Enter.` }
   })
 
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
@@ -2218,7 +2234,9 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    const isPerson = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
+    // The person's words: typed, from a bridge, or sent by the band's Send as theirs.
+    const origin = e.origin as { kind: string; asUser?: boolean }
+    const isPerson = origin.kind === 'composer' || origin.kind === 'bridge' || (origin.kind === 'plugin' && origin.asUser === true)
     if (isPerson && quotaPending !== null && !e.text.trim().startsWith('/')) {
       const what = quotaPending
       quotaPending = null
