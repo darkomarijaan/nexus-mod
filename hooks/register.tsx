@@ -1529,12 +1529,28 @@ async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo
 
 const PROVIDERS_KEY = 'providers'
 
-/** The router link: from state, else from the env the launcher set (then taken out of what tools inherit). */
+// A second copy of the link, for a `/clear` or in-process `/resume` that resets state: the module is not reloaded by either.
+let linkCopy: NexusRouterLink | null = null
+
+/** The router link: from state, else this module's copy, else the env the launcher set (then taken out of what tools inherit). */
 async function ensureRouterLink($: Engine): Promise<NexusRouterLink | null> {
   const kept = await read($, routerLink)
-  if (kept !== null) return kept
+  if (kept !== null) {
+    linkCopy = kept
+    return kept
+  }
+  if (linkCopy !== null) {
+    // State lost the link while the router lives on: put it back, and bring the HUD's route in line with the router's.
+    const link = linkCopy
+    await update($, routerLink, () => link)
+    await update($, provider, now => ({ ...now, linked: true }))
+    await providerStatus($).catch(() => undefined)
+
+    return link
+  }
   const link = routerLinkFrom(await $.env.get('ANTHROPIC_BASE_URL'), await $.env.get('NEXUS_ROUTER_TOKEN'))
   if (link === null) return null
+  linkCopy = link
   await update($, routerLink, () => link)
   await $.env.set('NEXUS_ROUTER_TOKEN', undefined)
   await update($, provider, now => ({ ...now, linked: true }))

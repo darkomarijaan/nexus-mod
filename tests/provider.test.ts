@@ -148,7 +148,7 @@ function routerEnv(on: On, events: unknown[][] = []) {
     return { value: undefined }
   })
   const calls: { url: string; method: string; headers: Record<string, string>; body: unknown }[] = []
-  const net = { isDown: false, routeStatus: 200, failKey: null as string | null }
+  const net = { isDown: false, routeStatus: 200, failKey: null as string | null, lost: new Set<string>(), statusRoute: 'claude', statusModel: null as string | null }
   on('http.fetch', (_, e) => {
     const body = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     calls.push({ url: e.url, method: e.init?.method ?? 'GET', headers: e.init?.headers ?? {}, body })
@@ -162,7 +162,7 @@ function routerEnv(on: On, events: unknown[][] = []) {
       if (batch === undefined) return { value: { status: 503, ok: false, headers: {}, text: '' } }
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ events: batch }) } }
     }
-    const data = e.url.endsWith('/__nexus/status') ? { route: 'claude', model: null, counts: { claude: 0, hub: 0 }, held: [] } : { ok: true }
+    const data = e.url.endsWith('/__nexus/status') ? { route: net.statusRoute, model: net.statusModel, counts: { claude: 0, hub: 0 }, held: [] } : { ok: true }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(data) } }
   })
   on('session.root', () => ({ value: 'C:/app' }))
@@ -170,11 +170,16 @@ function routerEnv(on: On, events: unknown[][] = []) {
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   const clock = mock.clock(on)
   // A state value that reads back as nothing, for the key a test names: what a damaged state would do.
-  on('state.get', (_, e, next) => (net.failKey === e.key ? ({ value: null, version: 1 } as never) : next(e)))
+  // A key in `lost` reads back as nothing until it is written again: a state the host reset (a /clear).
+  on('state.get', async (_, e, next) => {
+    if (net.lost.has(e.key)) return { value: { ...((await next(e)) as { value: { version: number } }).value, value: undefined } } as never
+    return net.failKey === e.key ? ({ value: null, version: 1 } as never) : next(e)
+  })
   // Every write to state, as the JSON the engine would keep: what a reload (or anyone) could read back.
   const writes: { key: string; json: string; value: unknown }[] = []
   on('state.set', (_, e, next) => {
     writes.push({ key: e.key, json: JSON.stringify(e.value), value: e.value })
+    net.lost.delete(e.key)
     return next(e)
   })
   const written = {
@@ -240,6 +245,29 @@ describe('router link in a claude-nexus session', () => {
     await $.command.run({ command: 'provider-nexus', args: 'use claude' } as never)
     expect(await ui.find({ type: 'Text', text: /⇄ myhub/ })).toBeUndefined()
     await ui.unmount()
+  })
+
+  test('a state the host reset does not lose the link: status and use claude still work, and the route comes back', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const { env, net, written, clock } = routerEnv(on)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    net.statusRoute = 'myhub'
+    net.statusModel = 'antigravity/gemini-3.8-flash-tiered'
+    // /clear: state reads back empty, the env no longer holds the token.
+    net.lost.add('routerLink').add('provider').add('routerWatcher')
+    expect(env.NEXUS_ROUTER_TOKEN).toBeUndefined()
+    const status = await $.command.run({ command: 'provider-nexus', args: 'status' } as never)
+    expect(status.text).toContain('myhub')
+    expect(status.text).not.toContain('does not run behind')
+    expect(written.of('routerLink').at(-1)?.value).toEqual({ url: 'http://127.0.0.1:51234', token: CONTROL })
+    const route = (written.of('provider').at(-1)?.value as { route: string; linked: boolean }) ?? { route: '', linked: false }
+    expect(route.route).toBe('myhub')
+    expect(route.linked).toBe(true)
+    net.lost.add('routerLink')
+    net.statusRoute = 'claude'
+    expect((await $.command.run({ command: 'provider-nexus', args: 'use claude' } as never)).text).toContain('Back on Claude')
   })
 
   test('an unknown profile is refused without calling the router', { options: BASE_OPTIONS }, async ($, on) => {
