@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 (2026-10-11)
+
+- **Lean mode:** terse replies and minimal code as rules in the system prompt, on by default (`lite` talk, minimal code on). `/lean-nexus` switches a level or turns them off mid-session (from the next turn; the prompt cache resets once); the pick is remembered across sessions.
+- The Executive Summary keeps its three headings but goes terse while lean talk is on.
+- `/lean-review-nexus [base]`: Claude reviews the changes for over-engineering against the same ladder; edits nothing.
+- `/compress-nexus [file]`: shortens CLAUDE.md with the helper model; refuses a result that loses a code block, path, URL or number; asks first and keeps a backup.
+- HUD badge `✂ lite · min`; the turn footer shows the turn's output tokens (`out 1.2k`).
+
 ## 0.5.1 (2026-10-11)
 
 - **One-key switch:** `ctrl+x tab r` flips between Claude and the hub used last (else the default fallback profile). The last hub is remembered across sessions.

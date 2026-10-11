@@ -282,6 +282,8 @@ export type FooterFacts = {
   files: number
   contextPct: number | null
   checks: 'passed' | 'failed' | null
+  /** Output tokens the turn's requests produced, when the turn reports them. */
+  outputTokens?: number
 }
 
 export function duration(ms: number): string {
@@ -293,11 +295,12 @@ export function duration(ms: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
 }
 
-/** `⏱ 3m 12s · 14 tools · 4 files · ctx 42% · checks ✓` */
+/** `⏱ 3m 12s · 14 tools · 4 files · out 1.2k · ctx 42% · checks ✓` */
 export function footerText(facts: FooterFacts): string {
   const parts = [`⏱ ${duration(facts.durationMs)}`]
   if (facts.tools > 0) parts.push(`${facts.tools} tool${facts.tools === 1 ? '' : 's'}`)
   if (facts.files > 0) parts.push(`${facts.files} file${facts.files === 1 ? '' : 's'}`)
+  if (facts.outputTokens !== undefined && facts.outputTokens > 0) parts.push(`out ${tokens(facts.outputTokens)}`)
   if (facts.contextPct !== null) parts.push(`ctx ${facts.contextPct}%`)
   if (facts.checks !== null) parts.push(facts.checks === 'passed' ? 'checks ✓' : 'checks ✗')
 

@@ -126,6 +126,9 @@ export type NexusProviderView = {
 /** The router this session runs behind (its control token), kept so a reload finds it. */
 export type NexusRouterLink = { url: string; token: string }
 
+/** The person's /lean-nexus pick over the settings; a missing field follows the settings. */
+export type NexusLeanPick = { talk?: 'off' | 'lite' | 'ultra'; code?: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
     'nexus': {
@@ -153,6 +156,8 @@ declare module 'claude-code' {
       routerWatcher: number
       /** When Claude's plan limit resets after a fallback (ms); null: nothing to offer. */
       claudeBackAt: number | null
+      /** The /lean-nexus pick, remembered across sessions in $.store. */
+      leanPick: NexusLeanPick
     }
   }
 }
