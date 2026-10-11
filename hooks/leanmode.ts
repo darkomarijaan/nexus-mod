@@ -3,9 +3,11 @@
  * the /lean-nexus arguments, and the HUD badge. Pure: no $, no I/O.
  */
 
+import type { NexusLeanPick } from '../types'
+
 export type LeanTalk = 'off' | 'lite' | 'ultra'
 export type LeanSettings = { talk: LeanTalk; code: boolean }
-export type LeanPick = { talk?: LeanTalk; code?: boolean }
+export type LeanPick = NexusLeanPick
 
 const TALKS: readonly string[] = ['off', 'lite', 'ultra']
 

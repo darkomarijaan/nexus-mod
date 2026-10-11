@@ -56,6 +56,19 @@ import {
   type ProviderProfile,
   validateProfile,
 } from './provider'
+import {
+  isOverride,
+  LEAN_NOTE,
+  LEAN_USAGE,
+  leanLabel,
+  leanRules,
+  leanSettings,
+  parseLeanArgs,
+  readLeanPick,
+  summaryRules,
+  type LeanPick,
+  type LeanSettings,
+} from './leanmode'
 import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, mayPush, scanCommand, type ShieldHit } from './shield'
@@ -156,6 +169,8 @@ const routerLink = atom({ plugin: 'nexus', key: 'routerLink' } as const, null as
 const routerWatcher = atom({ plugin: 'nexus', key: 'routerWatcher' } as const, 0)
 // When Claude's limit resets after a fallback, so a turn's end can offer the way back.
 const claudeBackAt = atom({ plugin: 'nexus', key: 'claudeBackAt' } as const, null as number | null)
+// The person's /lean-nexus pick over the settings; $.store keeps it across sessions.
+const leanPick = atom({ plugin: 'nexus', key: 'leanPick' } as const, {} as LeanPick)
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -1057,6 +1072,35 @@ async function runTheme($: Engine, cfg: NexusConfig, args: string): Promise<stri
   return skinText('Skin: ', await setTheme($, cfg, wanted))
 }
 
+// ── Lean mode ────────────────────────────────────────────────────────────
+
+// Across sessions and projects: the person's last /lean-nexus pick.
+const LEAN_KEY = 'lean'
+
+function leanBase(cfg: NexusConfig): LeanSettings {
+  return { talk: cfg.leanTalk, code: cfg.leanCode }
+}
+
+async function currentLean($: Engine, cfg: NexusConfig): Promise<LeanSettings> {
+  return leanSettings(leanBase(cfg), await read($, leanPick))
+}
+
+async function runLean($: Engine, cfg: NexusConfig, args: string): Promise<string> {
+  const command = parseLeanArgs(args)
+  if (command.kind === 'error') return command.text
+  if (command.kind === 'status') {
+    const pick = await read($, leanPick)
+
+    return `${leanLabel(leanSettings(leanBase(cfg), pick))}${isOverride(pick) ? ' (override)' : ''}\n${LEAN_USAGE}`
+  }
+  const pick: LeanPick = command.kind === 'reset' ? {} : { ...(await read($, leanPick)), ...command.pick }
+  if (command.kind === 'reset') await $.store.delete(LEAN_KEY).catch(() => undefined)
+  else await $.store.set(LEAN_KEY, pick)
+  await update($, leanPick, () => pick)
+
+  return `${leanLabel(leanSettings(leanBase(cfg), pick))}. ${LEAN_NOTE}`
+}
+
 // ── Session handoff ──────────────────────────────────────────────────────
 
 async function handoffKey($: Engine): Promise<string> {
@@ -1952,17 +1996,11 @@ async function testProfile($: Engine, name: string): Promise<string> {
 
 // ═══ 4. Delivery ═════════════════════════════════════════════════════════
 
-function deliveryRules(cfg: NexusConfig): string {
+function deliveryRules(cfg: NexusConfig, lean: LeanSettings): string {
   const parts: string[] = []
-  if (cfg.executiveSummary) {
-    parts.push(`# Delivery (Nexus)
-- Work quietly: no progress recaps or interim summaries between tool calls. At most one short line before a tool call, and only when it helps.
-- When this turn changed files, end with one final reply in plain English for a non-specialist (no jargon, no code unless asked), under exactly these three headings:
-  **What Changed**: one line per file touched, naming the file and what changed in it in everyday words.
-  **Verification Status**: the lint, type-check and test commands you ran and whether they passed; say plainly if you ran none. Nexus re-runs the project's checks when you stop and sends any failure back to you.
-  **Next Steps**: what the person may want to do or decide next, or "None".
-- When the turn changed no files, answer plainly without those headings.`)
-  }
+  if (cfg.executiveSummary) parts.push(summaryRules(lean.talk))
+  const rules = leanRules(lean)
+  if (rules !== '') parts.push(rules)
   if (cfg.designLens) {
     parts.push(`# Visual design options (Nexus)
 When you would offer a choice between UI layouts, color palettes, typography or component themes, call the ${DESIGN_TOOL} tool with 2 to 6 concrete options (real hex colors, real font stacks, and optionally a small self-contained HTML sample using inline styles and the CSS variables --c-<colorName>, --font-heading, --font-body, --radius) instead of describing them in text. Then end your turn with one short line; the person's pick arrives as their next message, with its design tokens.`)
@@ -2100,6 +2138,7 @@ const COMMANDS = [
   { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
   { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
+  { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
 ] as const
 
 const DESIGN_SCHEMA = {
@@ -2138,8 +2177,9 @@ const DESIGN_SCHEMA = {
   },
 }
 
-function statusText(cfg: NexusConfig, theme: string): string {
+function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanOverride: boolean): string {
   const on = (flag: boolean) => (flag ? 'on ' : 'off')
+  const over = isLeanOverride ? ' (override)' : ''
 
   return [
     'Nexus',
@@ -2150,6 +2190,8 @@ function statusText(cfg: NexusConfig, theme: string): string {
     `  Auto lint/test      ${on(cfg.autoVerify)}  self-heal attempts: ${cfg.maxHealAttempts}`,
     `  Quiet transcript    ${on(cfg.quietTranscript)}`,
     `  Executive summary   ${on(cfg.executiveSummary)}`,
+    `  Lean talk           ${lean.talk}${over}  /lean-nexus [talk off|lite|ultra] [code on|off] | reset`,
+    `  Minimal code        ${lean.code ? 'on' : 'off'}${over}`,
     `  Design Lens         ${on(cfg.designLens)}  /preview-nexus [url] [base]`,
     `  Done/approval alert ${on(cfg.notify)}  after turns of ${Math.round(cfg.notifyAfterMs / 1000)}s or more`,
     `  Compaction guard    ${on(cfg.compactGuard)}  reminds Claude of your last request after compaction`,
@@ -2216,6 +2258,8 @@ export const register: Register = (on, options) => {
     }
     const picked = (await storedTheme($)) ?? cfg.theme
     await update($, themeName, () => picked)
+    const leanStored = await $.store.get(LEAN_KEY).catch(() => null)
+    await update($, leanPick, () => readLeanPick(leanStored))
     const saved = await listCheckpoints($)
     await update($, checkpoints, () => saved)
     if (cfg.checkpoints) void pruneShadow($).catch(() => undefined)
@@ -2256,7 +2300,9 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'preview-nexus' }, async ($, e) => ({ text: await runPreview($, cfg, e.args) }))
 
-  on('command.run', { command: 'nexus' }, async $ => ({ text: statusText(cfg, await read($, themeName)) }))
+  on('command.run', { command: 'nexus' }, async $ => ({
+    text: statusText(cfg, await read($, themeName), await currentLean($, cfg), isOverride(await read($, leanPick))),
+  }))
 
   on('command.run', { command: 'handoff-nexus' }, async $ => {
     const record = previousHandoff ?? (await readHandoff($))
@@ -2283,6 +2329,8 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
+
+  on('command.run', { command: 'lean-nexus' }, async ($, e) => ({ text: await runLean($, cfg, e.args) }))
 
   on('command.run', { command: 'provider-nexus' }, async ($, e) => {
     if ((await ensureRouterLink($)) !== null) void watchRouter($, cfg, false).catch(() => undefined)
@@ -2798,7 +2846,13 @@ export const register: Register = (on, options) => {
   // ── Delivery rules in the system prompt ───────────────────────────────
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
-    const text = deliveryRules(cfg)
+    let lean: LeanSettings = { talk: 'off', code: false }
+    try {
+      lean = await currentLean($, cfg)
+    } catch {
+      // lean mode never blocks a turn: without it the rules are as before
+    }
+    const text = deliveryRules(cfg, lean)
     if (text === '') return composed
 
     return { ...composed, sections: [...composed.sections, { id: 'nexus:delivery', text, scope: 'session' as const }] }

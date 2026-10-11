@@ -72,6 +72,19 @@
       "description": "Ask Claude to skip progress chatter and end each change with What Changed / Verification Status / Next Steps.",
       "default": true
     },
+    "leanTalk": {
+      "type": "string",
+      "title": "Lean talk",
+      "description": "Terse replies to save output tokens. lite: no preamble, recaps or filler. ultra: telegraphic. off: as before. /lean-nexus switches it on the fly (the pick is remembered across sessions).",
+      "options": ["off", "lite", "ultra"],
+      "default": "lite"
+    },
+    "leanCode": {
+      "type": "boolean",
+      "title": "Minimal code",
+      "description": "Before writing code, Claude checks: needed at all, already in the codebase, standard library, native feature, installed dependency, one line, then the minimum. Validation, security and accessibility are never cut.",
+      "default": true
+    },
     "designLens": {
       "type": "boolean",
       "title": "Design Lens",

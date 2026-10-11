@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { readConfig } from '../hooks/config'
 import { nextStepFrom } from '../hooks/insights'
@@ -124,5 +124,99 @@ describe('lean label and badge', () => {
     expect(leanBadge({ talk: 'ultra', code: false }, '✂')).toBe('✂ ultra')
     expect(leanBadge({ talk: 'off', code: true }, '[lean]')).toBe('[lean] min')
     expect(leanBadge({ talk: 'off', code: false }, '✂')).toBeNull()
+  })
+})
+
+// Only the delivery rules under test: every other module stays out of the way.
+const BASE = {
+  checkpoints: false,
+  autoVerify: false,
+  designLens: false,
+  assumptionAudit: 'off',
+  handoff: false,
+  notify: false,
+  suggestNext: false,
+  compactGuard: false,
+  loopGuard: false,
+  trimOutput: false,
+  quotaGuard: 0,
+  turnFooter: false,
+} as const
+
+const FACTS = {
+  model: 'claude-opus-5-5',
+  promptModel: 'claude-opus-5-5',
+  surfaces: ['terminal'],
+  tools: ['Bash', 'Edit'],
+  outputStyle: null,
+  traits: [],
+} as const
+
+describe('lean rules in the system prompt', () => {
+  test('the defaults join lite talk, minimal code and the terse summary', { options: BASE }, async ($, on) => {
+    on('prompt.compose', () => ({ sections: [] }))
+    const { sections } = await $.prompt.compose(FACTS as never)
+    const ours = sections.filter(section => section.id === 'nexus:delivery')
+    expect(ours).toHaveLength(1)
+    expect(ours[0]?.text).toContain('Nexus lean: lite')
+    expect(ours[0]?.text).toContain('Minimal code (Nexus lean)')
+    expect(ours[0]?.text).toContain('one short line per file')
+  })
+
+  test('talk off brings the full report back', { options: { ...BASE, leanTalk: 'off' } }, async ($, on) => {
+    on('prompt.compose', () => ({ sections: [] }))
+    const text = (await $.prompt.compose(FACTS as never)).sections.find(section => section.id === 'nexus:delivery')?.text ?? ''
+    expect(text).toContain('plain English for a non-specialist')
+    expect(text).not.toContain('Terse replies')
+  })
+
+  test('without the executive summary the talk rules still hold', { options: { ...BASE, executiveSummary: false } }, async ($, on) => {
+    on('prompt.compose', () => ({ sections: [] }))
+    const text = (await $.prompt.compose(FACTS as never)).sections.find(section => section.id === 'nexus:delivery')?.text ?? ''
+    expect(text).toContain('Nexus lean: lite')
+    expect(text).not.toContain('**What Changed**')
+  })
+
+  test('everything off adds no section', { options: { ...BASE, executiveSummary: false, leanTalk: 'off', leanCode: false } }, async ($, on) => {
+    on('prompt.compose', () => ({ sections: [] }))
+    const { sections } = await $.prompt.compose(FACTS as never)
+    expect(sections.find(section => section.id === 'nexus:delivery')).toBeUndefined()
+  })
+})
+
+describe('/lean-nexus', () => {
+  test('a switch beats the settings until reset', { options: BASE }, async ($, on) => {
+    mock.store(on)
+    on('prompt.compose', () => ({ sections: [] }))
+    const delivery = async () => (await $.prompt.compose(FACTS as never)).sections.find(section => section.id === 'nexus:delivery')?.text ?? ''
+    const switched = await $.command.run({ command: 'lean-nexus', args: 'talk ultra' } as never)
+    expect(switched.text).toContain('Talk: ultra · Minimal code: on')
+    expect(switched.text).toContain('next turn')
+    expect(await delivery()).toContain('Nexus lean: ultra')
+    expect((await $.command.run({ command: 'lean-nexus', args: '' } as never)).text).toContain('(override)')
+    await $.command.run({ command: 'lean-nexus', args: 'reset' } as never)
+    expect(await delivery()).toContain('Nexus lean: lite')
+    expect((await $.command.run({ command: 'lean-nexus', args: '' } as never)).text).not.toContain('(override)')
+  })
+
+  test('off and on switch both modes', { options: BASE }, async ($, on) => {
+    mock.store(on)
+    expect((await $.command.run({ command: 'lean-nexus', args: 'off' } as never)).text).toContain('Talk: off · Minimal code: off')
+    expect((await $.command.run({ command: 'lean-nexus', args: 'on' } as never)).text).toContain('Talk: lite · Minimal code: on')
+  })
+
+  test('a typo changes nothing', { options: BASE }, async ($, on) => {
+    mock.store(on)
+    const answer = await $.command.run({ command: 'lean-nexus', args: 'talk mega' } as never)
+    expect(answer.text).toContain('Not understood')
+    expect((await $.command.run({ command: 'lean-nexus', args: '' } as never)).text).toContain('Talk: lite')
+  })
+
+  test('/nexus lists both modes', { options: BASE }, async ($, on) => {
+    mock.store(on)
+    await $.command.run({ command: 'lean-nexus', args: 'code off' } as never)
+    const status = (await $.command.run({ command: 'nexus', args: '' } as never)).text ?? ''
+    expect(status).toContain('Lean talk           lite (override)')
+    expect(status).toContain('Minimal code        off (override)')
   })
 })
