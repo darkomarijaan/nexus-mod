@@ -82,7 +82,7 @@ import {
   type LeanSettings,
 } from './leanmode'
 import { masksIn, maskSecrets } from './secrets'
-import { claudeThemeFor, paint, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
+import { claudeThemeFor, paint, pickerKey, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, mayPush, scanCommand, type ShieldHit } from './shield'
 import {
   addSample,
@@ -3316,7 +3316,7 @@ export const register: Register = (on, options) => {
           <Button
             key={`theme-${theme.name}`}
             plain
-            {...(index < 9 ? { hotkey: String(index + 1) } : {})}
+            {...((key => (key === undefined ? {} : { hotkey: key }))(pickerKey(index)))}
             onPress={async () => {
               await $.ui.close({ id: PANE.theme }).catch(() => undefined)
               $.ui.toast(skinText('Skin: ', await setTheme($, cfg, theme.name)))
@@ -3332,7 +3332,7 @@ export const register: Register = (on, options) => {
           </Button>
         ))}
         <Text dimColor>
-          1-9 pick (remembered across sessions){cfg.syncClaudeTheme ? ", Claude Code's theme follows" : ''} · Esc close · /skin-nexus reset for the
+          1-9, a-{pickerKey(THEMES.length - 1)} pick (remembered across sessions){cfg.syncClaudeTheme ? ", Claude Code's theme follows" : ''} · Esc close · /skin-nexus reset for the
           configured one
         </Text>
       </Box>

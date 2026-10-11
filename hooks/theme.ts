@@ -36,10 +36,10 @@ export type Theme = {
   border: 'round' | 'single' | 'double' | 'bold' | 'classic'
   icons: ThemeIcons
   /**
-   * The Claude Code theme the skin pairs with: `dark` or `ansi` in the
-   * person's own variant (daltonized kept), or null to leave the person's own.
+   * The Claude Code theme the skin pairs with: `dark`, `light` or `ansi` in
+   * the person's own variant (daltonized kept), or null to leave the person's own.
    */
-  claudeTheme: 'dark' | 'ansi' | null
+  claudeTheme: 'dark' | 'light' | 'ansi' | null
 }
 
 const UNICODE: ThemeIcons = {
@@ -197,6 +197,127 @@ export const THEMES: readonly Theme[] = [
     icons: ASCII,
     claudeTheme: 'ansi',
   },
+  // Added after the first nine so their 1-9 keys in the picker stay put.
+  {
+    // Gruvbox dark, bright accents (github.com/morhetz/gruvbox).
+    name: 'gruvbox',
+    description: 'Gruvbox: retro groove, warm and earthy',
+    accent: '#fe8019',
+    ok: '#b8bb26',
+    warn: '#fabd2f',
+    bad: '#fb4934',
+    idle: '#928374',
+    agent: '#d3869b',
+    bar: ['▓', '░'],
+    border: 'single',
+    icons: UNICODE,
+    claudeTheme: 'dark',
+  },
+  {
+    // Catppuccin Mocha (catppuccin.com/palette).
+    name: 'mocha',
+    description: 'Catppuccin Mocha: soothing pastels on dark',
+    accent: '#89dceb',
+    ok: '#a6e3a1',
+    warn: '#f9e2af',
+    bad: '#f38ba8',
+    idle: '#6c7086',
+    agent: '#cba6f7',
+    bar: ['◆', '◇'],
+    border: 'round',
+    icons: UNICODE,
+    claudeTheme: 'dark',
+  },
+  {
+    // Tokyo Night, night variant (github.com/folke/tokyonight.nvim).
+    name: 'tokyo',
+    description: 'Tokyo Night: neon city lights after dark',
+    accent: '#7aa2f7',
+    ok: '#9ece6a',
+    warn: '#e0af68',
+    bad: '#f7768e',
+    idle: '#565f89',
+    agent: '#bb9af7',
+    bar: ['▬', '─'],
+    border: 'round',
+    icons: UNICODE,
+    claudeTheme: 'dark',
+  },
+  {
+    // Rosé Pine, main variant (rosepinetheme.com/palette).
+    name: 'rosepine',
+    description: 'Rosé Pine: muted rose, gold and foam',
+    accent: '#ebbcba',
+    ok: '#9ccfd8',
+    warn: '#f6c177',
+    bad: '#eb6f92',
+    idle: '#6e6a86',
+    agent: '#c4a7e7',
+    bar: ['▪', '▫'],
+    border: 'round',
+    icons: UNICODE,
+    claudeTheme: 'dark',
+  },
+  {
+    // Monokai, the classic Sublime Text colors.
+    name: 'monokai',
+    description: 'Monokai: punchy pink, lime and cyan',
+    accent: '#66d9ef',
+    ok: '#a6e22e',
+    warn: '#e6db74',
+    bad: '#f92672',
+    idle: '#75715e',
+    agent: '#ae81ff',
+    bar: ['■', '·'],
+    border: 'bold',
+    icons: UNICODE,
+    claudeTheme: 'dark',
+  },
+  {
+    // Catppuccin Latte (catppuccin.com/palette): dark enough for a light background.
+    name: 'latte',
+    description: 'Catppuccin Latte: for light terminals',
+    accent: '#1e66f5',
+    ok: '#40a02b',
+    warn: '#df8e1d',
+    bad: '#d20f39',
+    idle: '#8c8fa1',
+    agent: '#8839ef',
+    bar: ['●', '◦'],
+    border: 'round',
+    icons: UNICODE,
+    claudeTheme: 'light',
+  },
+  {
+    // Okabe & Ito's colorblind-safe hues (jfly.uni-koeln.de/color), with a bright idle gray.
+    name: 'contrast',
+    description: 'High contrast, colorblind-safe (Okabe-Ito hues)',
+    accent: '#56b4e9',
+    ok: '#009e73',
+    warn: '#f0e442',
+    bad: '#d55e00',
+    idle: '#bdbdbd',
+    agent: '#cc79a7',
+    bar: ['█', '▒'],
+    border: 'double',
+    icons: UNICODE,
+    claudeTheme: 'dark',
+  },
+  {
+    // A green P1 phosphor CRT with amber alerts, drawn in plain ASCII.
+    name: 'phosphor',
+    description: 'Green phosphor CRT, plain ASCII glyphs',
+    accent: '#33ff66',
+    ok: '#7dff9a',
+    warn: '#ffb000',
+    bad: '#ff5555',
+    idle: '#1f9e46',
+    agent: '#b3ffc6',
+    bar: ['=', '.'],
+    border: 'classic',
+    icons: ASCII,
+    claudeTheme: 'dark',
+  },
 ]
 
 export const DEFAULT_THEME = 'default'
@@ -256,11 +377,20 @@ export function claudeThemeFor(theme: Theme, own: string): string {
   switch (theme.claudeTheme) {
     case 'dark':
       return isDaltonized ? 'dark-daltonized' : 'dark'
+    case 'light':
+      return isDaltonized ? 'light-daltonized' : 'light'
     case 'ansi':
       return isLight ? 'light-ansi' : 'dark-ansi'
     default:
       return own
   }
+}
+
+/** The picker key of the theme at `index`: 1-9, then a-z; none past that. */
+export function pickerKey(index: number): string | undefined {
+  if (index < 9) return String(index + 1)
+
+  return index < 35 ? String.fromCharCode(97 + index - 9) : undefined
 }
 
 /** Text for `/skin-nexus list`: every theme, the current one marked. */

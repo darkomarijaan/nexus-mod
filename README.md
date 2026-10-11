@@ -115,7 +115,20 @@ When Claude would offer a choice between layouts, palettes, typography or compon
 
 <img src="docs/screenshots/skins.png" alt="The HUD in all nine skins: default, claude, dracula, nord, ocean, sunset, forest, mono and ascii" width="100%">
 
-Nine looks for the HUD and drawers, each with its own colors, bar glyphs, icons and borders: `default`, `claude` (follows Claude Code's own `/theme`), `dracula`, `nord`, `ocean`, `sunset`, `forest`, `mono` and `ascii` (for fonts without Unicode). Switch with `/skin-nexus` or `ctrl+x tab t`; the pick is remembered across sessions, and Claude Code's own theme follows it.
+Seventeen looks for the HUD and drawers, each with its own colors, bar glyphs, icons and borders. The nine above: `default`, `claude` (follows Claude Code's own `/theme`), `dracula`, `nord`, `ocean`, `sunset`, `forest`, `mono` and `ascii` (for fonts without Unicode). And eight more:
+
+| Skin | Look |
+|---|---|
+| `gruvbox` | Gruvbox: retro groove, warm and earthy |
+| `mocha` | Catppuccin Mocha: soothing pastels on dark |
+| `tokyo` | Tokyo Night: neon city lights after dark |
+| `rosepine` | Rosé Pine: muted rose, gold and foam |
+| `monokai` | Monokai: punchy pink, lime and cyan |
+| `latte` | Catppuccin Latte, for light terminals (Claude Code's theme goes light) |
+| `contrast` | High contrast, with the colorblind-safe Okabe-Ito hues |
+| `phosphor` | A green phosphor CRT with amber alerts, in plain ASCII glyphs |
+
+Switch with `/skin-nexus` (keys `1`-`9`, then `a`-`h`) or `ctrl+x tab t`; the pick is remembered across sessions, and Claude Code's own theme follows it.
 
 ### And the rest
 
@@ -255,7 +268,7 @@ Change these with `/plugin configure nexus@nexus-mod` (or `/plugin`, pick nexus,
 | Next-step suggestion | on | Offer the reply's first Next Step as the prompt suggestion |
 | Commit helper | on | Commit button and `/commit-nexus` |
 | Theme | `default` | Starting skin; a `/skin-nexus` pick overrides it until `/skin-nexus reset` |
-| Claude Code theme follows the skin | on | A dark skin moves Claude Code's own theme to dark (daltonized kept), `ascii` to ANSI; `default` and `claude` put yours back |
+| Claude Code theme follows the skin | on | A dark skin moves Claude Code's own theme to dark and `latte` to light (daltonized kept), `ascii` to ANSI; `default` and `claude` put yours back |
 | Trim noisy output | on | Fold routine lines of long install, build, test and log output |
 | Quota guard | `90` % | Ask before going on past this share of the 5-hour or weekly limit (0: off) |
 | Turn footer | on | Time, tools, files, output tokens, context and checks under each answer |
@@ -277,6 +290,8 @@ Nothing leaves your machine except what Claude Code itself sends.
 **The install fails with `EISDIR ... readlink`.** Claude Code cannot read a plugin folder on an exFAT or FAT32 drive. Keep the folder on an NTFS drive.
 
 **`ctrl+x tab` does nothing in VS Code.** Turn on `terminal.integrated.sendKeybindingsToShell`, or use the commands (`/enhance-nexus`, `/rollback-nexus`, …). Press `ctrl+x`, let go, then `tab`: `ctrl+x` alone shows nothing.
+
+**Clicking `[-]` at the right of the HUD does nothing.** Claude Code draws that mark, not Nexus: it folds the band above the prompt into one row. Claude Code only takes mouse clicks in its fullscreen layout; anywhere else, press `ctrl+x`, then `ctrl+a`, to fold or unfold the HUD.
 
 **The HUD shows no 5-hour or weekly limit.** They appear on a Claude subscription after the first reply of the session; an API key has none.
 
