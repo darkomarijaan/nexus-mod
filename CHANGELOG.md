@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2 (2026-10-11)
+
+- **Git counts in the HUD:** beside the branch, `↑2` commits to push, `↓1` to pull, `+3` files staged, `~2` changed, `?1` untracked, `!1` in conflict, in the skin's colors (`^` and `v` in ASCII skins); a clean branch in step shows none. One `git --no-optional-locks status --porcelain=v2 --branch` reads it all; a turn that changed files reads it again at once, and a status too slow for its timeout still names the branch.
+- **Agents panel:** `/agents-nexus`, or `a` in the HUD once a subagent has run, follows every subagent of the session live: model, a context bar, tools run and the one running now, how long it has run, a `⚠ quiet` mark after two minutes without a tool, and the steps it reports. Finished ones stay listed with time, tools and tokens; one that is resumed is running again. Pick a running one with `1`-`9` and type to send it a message. Inspired by savvy-progress (johnnyvizz/claude-kit).
+- **Step reports:** subagents get a `step` tool to report `step 3/5 writing tests` to the panel; the Agent step reports setting (on by default) turns it off, and the panel then shows what it observes only.
+
 ## 0.6.1 (2026-10-11)
 
 - **Eight more skins**, seventeen in all: `gruvbox`, `mocha` (Catppuccin Mocha), `tokyo` (Tokyo Night), `rosepine`, `monokai`, `latte` (Catppuccin Latte, for light terminals: Claude Code's own theme goes light, daltonized kept), `contrast` (high contrast, Okabe-Ito colorblind-safe hues) and `phosphor` (a green CRT in plain ASCII glyphs). The skin picker gives skins past the ninth the keys `a`-`h`.
