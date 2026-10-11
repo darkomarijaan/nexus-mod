@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { readConfig } from '../hooks/config'
 import { nextStepFrom } from '../hooks/insights'
+import { footerText } from '../hooks/lean'
 import {
   isOverride,
   leanBadge,
@@ -218,5 +219,58 @@ describe('/lean-nexus', () => {
     const status = (await $.command.run({ command: 'nexus', args: '' } as never)).text ?? ''
     expect(status).toContain('Lean talk           lite (override)')
     expect(status).toContain('Minimal code        off (override)')
+  })
+})
+
+const BAND = {
+  hasSurvey: false,
+  isWorking: false,
+  maxRows: 10,
+  bodyColumns: 120,
+  scroll: { offset: 0, bodyRows: 10 },
+  view: {},
+}
+
+describe('lean badge in the HUD', () => {
+  test('the band shows what is on, spells it out in ascii, and hides when off', { options: BASE }, async ($, on) => {
+    mock.store(on)
+    const first = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await first.find({ type: 'Text', text: /✂ lite · min/ })).toBeDefined()
+    await first.unmount()
+
+    await $.command.run({ command: 'skin-nexus', args: 'ascii' } as never)
+    await $.command.run({ command: 'lean-nexus', args: 'talk ultra' } as never)
+    const ascii = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await ascii.find({ type: 'Text', text: /\[lean\] ultra · min/ })).toBeDefined()
+    await ascii.unmount()
+
+    await $.command.run({ command: 'lean-nexus', args: 'off' } as never)
+    const off = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await off.find({ type: 'Text', text: /\[lean\]/ })).toBeUndefined()
+    await off.unmount()
+  })
+})
+
+describe('output tokens in the footer', () => {
+  test('the footer counts the output tokens when the turn reports them', () => {
+    expect(footerText({ durationMs: 65_000, tools: 1, files: 0, contextPct: null, checks: null, outputTokens: 1234 })).toBe('⏱ 1m 5s · 1 tool · out 1.2k')
+    expect(footerText({ durationMs: 65_000, tools: 1, files: 0, contextPct: null, checks: null })).toBe('⏱ 1m 5s · 1 tool')
+  })
+
+  test('a finished turn passes its usage to the footer', { options: { ...BASE, turnFooter: true } }, async ($, on) => {
+    on('clock.now', () => ({ value: 1000 }))
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('tool.call', { tool: 'Read' }, () => ({ result: {} as never }))
+    on('turn.complete', (_, e) => ({ text: e.answer }))
+    await $.tool.call({ tool: 'Read', file_path: 'C:/app/a.ts' } as never)
+    const done = await $.turn.complete({
+      answer: 'Done.',
+      durationMs: 65_000,
+      isAborted: false,
+      turnId: 't1',
+      reason: 'answer',
+      usage: { input_tokens: 10, output_tokens: 1234, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' },
+    } as never)
+    expect(done.text).toBe('⏱ 1m 5s · 1 tool · out 1.2k')
   })
 })

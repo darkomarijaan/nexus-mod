@@ -16,6 +16,7 @@ export type ThemeIcons = {
   fail: string
   busy: string
   checkpoint: string
+  lean: string
 }
 
 export type Theme = {
@@ -52,6 +53,7 @@ const UNICODE: ThemeIcons = {
   fail: '✗',
   busy: '⟳',
   checkpoint: '⚑',
+  lean: '✂',
 }
 
 const ASCII: ThemeIcons = {
@@ -65,6 +67,7 @@ const ASCII: ThemeIcons = {
   fail: 'x',
   busy: '..',
   checkpoint: '#',
+  lean: '[lean]',
 }
 
 export const THEMES: readonly Theme[] = [

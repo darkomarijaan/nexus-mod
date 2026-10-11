@@ -60,6 +60,7 @@ import {
   isOverride,
   LEAN_NOTE,
   LEAN_USAGE,
+  leanBadge,
   leanLabel,
   leanRules,
   leanSettings,
@@ -2713,6 +2714,7 @@ export const register: Register = (on, options) => {
           files: finished.changed.length,
           contextPct: h.percent,
           checks: isThisTurn && (v.phase === 'passed' || v.phase === 'failed') ? v.phase : null,
+          outputTokens: e.usage?.output_tokens,
         })
 
         footerResult = { ...result, text: footer }
@@ -2908,7 +2910,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [now, t, v, cps, working, list, rate, skin, route] = await Promise.all([
+    const [now, t, v, cps, working, list, rate, skin, route, pick] = await Promise.all([
       read($, hud),
       read($, turn),
       read($, verify),
@@ -2918,10 +2920,12 @@ export const register: Register = (on, options) => {
       read($, speed),
       read($, themeName),
       read($, provider),
+      read($, leanPick),
     ])
     const th = themeOf(skin)
     const ic = th.icons
     const tint = (color: string) => paint(color, th)
+    const leanTag = leanBadge(leanSettings(leanBase(cfg), pick), ic.lean)
     // r: Claude ⇄ hub in a claude-nexus session; in a plain one it copies the restart command.
     const flipTo = toggleTarget(route.route, route.lastHub, route.profiles)
     const cols = e.props.bodyColumns
@@ -2972,6 +2976,7 @@ export const register: Register = (on, options) => {
             ) : (
               now.model !== '' && <Text> · {ic.model} {now.model}</Text>
             )}
+            {leanTag !== null ? <Text color={th.idle}>{` · ${leanTag}`}</Text> : null}
             <Text dimColor> · </Text>
             <Text color={th.ok}>{ic.dot} {counts.working}{isWide ? ' working' : ''} </Text>
             <Text color={th.warn}> {ic.dot} {counts.waiting}{isWide ? ' waiting' : ''} </Text>
