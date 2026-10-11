@@ -26,14 +26,14 @@ Nexus sekarang hanya menampilkan jumlah subagent di header (`⚙ 1 agent`) dan d
 | Cara menunjukkan kemajuan | B: pengamatan otomatis (aktivitas terakhir, jumlah tool, context, durasi) **ditambah** tool `step` opsional |
 | Daftar subagent di `/sessions-nexus` | B: dibiarkan seperti sekarang; panel ini versi lengkapnya |
 | Sumber data | Pendekatan 3: hook untuk data live, ditambah rekonsiliasi dengan `$.agent.list` di polling 4 detik yang sudah ada |
-| Kirim pesan ke subagent | Ikut di versi ini (`m`) |
+| Kirim pesan ke subagent | Ikut di versi ini (pilih baris, lalu ketik) |
 | Tool `step` | Ikut, bisa dimatikan lewat setting `agentSteps` (bawaan on) |
 
 ## 3. Arsitektur
 
 - **`hooks/agents.ts`** (baru, pure, dengan unit test): semua logika. Setiap event menjadi fungsi `(runs, input, now) → runs` baru; tidak menyentuh `$`.
 - **`hooks/register.tsx`**: wiring tipis. Hook yang sudah ada memanggil fungsi pure lalu `update($, agentRuns, …)`; ditambah pane, perintah, tool `step` dan tombol HUD.
-- **State:** satu atom baru `agentRuns: NexusAgentRun[]`, dideklarasikan di `types/index.d.ts`. Hanya untuk sesi ini; tidak disimpan ke `$.store`.
+- **State:** dua atom baru: `agentRuns: NexusAgentRun[]` dan `selectedAgent: string | null`, dideklarasikan di `types/index.d.ts`. Hanya untuk sesi ini; tidak disimpan ke `$.store`.
 
 ### 3.1 Record per subagent
 
@@ -113,7 +113,7 @@ Finished
 
 ### 4.3 Kirim pesan
 
-`1`–`9` memilih baris; `m` membuka Input; Enter mengirim lewat `$.session.send({ to: { agentId }, text })`. Hanya untuk subagent yang `running`. Gagal kirim memunculkan toast dengan alasannya. Tidak ada cara menghentikan subagent secara paksa di API mod 2.1.296.
+`1`–`9` memilih baris (atom `selectedAgent`, pola yang sama dengan `selectedPeer` di pane Sessions). Untuk subagent `running` yang terpilih, kotak Input muncul di bawah daftar; Enter mengirim lewat `$.session.send({ to: { agentId }, text })`. Subagent yang sudah selesai tidak punya kotak pesan. Pesan yang tidak terkirim (`isDelivered: false`, atau error) memunculkan toast dengan alasannya. Tidak ada cara menghentikan subagent secara paksa di API mod 2.1.296.
 
 ## 5. Tool `step` dan setting
 

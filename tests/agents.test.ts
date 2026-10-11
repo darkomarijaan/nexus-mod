@@ -317,3 +317,69 @@ describe('step reports', () => {
     expect(registered).not.toContain('step')
   })
 })
+
+const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+
+describe('Agents panel: pick, message, open from the HUD', () => {
+  test('picking a running agent and sending a message reaches that agent', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    const sent: unknown[] = []
+    on('session.send', (_, e) => {
+      sent.push(e.to)
+      return { isDelivered: true } as never
+    })
+    on('ui.toast', () => ({ value: undefined }) as never)
+    await spawnOne($ as never)
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    expect(((await ui.find({ key: 'agent-a1' })) as { props?: { hotkey?: string } } | undefined)?.props?.hotkey).toBe('1')
+    await ui.press({ key: 'agent-a1' })
+    await ui.input({ key: 'agent-message', text: 'stop after this file' })
+    // The engine hands hooks the recipient as its id.
+    expect(sent).toEqual(['a1'])
+    await ui.unmount()
+  })
+
+  test('a finished agent offers no message box', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    await spawnOne($ as never)
+    await $.turn.complete({ answer: 'ok', durationMs: 1000, isAborted: false, turnId: 's1', reason: 'answer', agentId: 'a1' } as never)
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    await ui.press({ key: 'agent-a1' })
+    expect(await ui.find({ key: 'agent-message' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a refused message is a toast, not an error', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    const toasts: string[] = []
+    on('session.send', () => ({ isDelivered: false, reason: 'no such agent' }) as never)
+    on('ui.toast', (_, e) => {
+      toasts.push(String((e as { text?: unknown }).text ?? ''))
+      return { value: undefined } as never
+    })
+    await spawnOne($ as never)
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    await ui.press({ key: 'agent-a1' })
+    await ui.input({ key: 'agent-message', text: 'hello' })
+    expect(toasts.join(' ')).toContain('Could not reach that subagent: no such agent')
+    await ui.unmount()
+  })
+
+  test('the HUD offers a only once a subagent has run', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    const before = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await before.find({ key: 'agents' })).toBeUndefined()
+    await before.unmount()
+    await spawnOne($ as never)
+    const after = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(((await after.find({ key: 'agents' })) as { props?: { hotkey?: string } } | undefined)?.props?.hotkey).toBe('a')
+    await after.unmount()
+  })
+})

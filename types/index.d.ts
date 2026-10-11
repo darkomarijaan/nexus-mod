@@ -199,6 +199,8 @@ declare module 'claude-code' {
       mcpRows: NexusMcpRow[]
       /** The subagents of this session for the Agents panel; never stored across sessions. */
       agentRuns: NexusAgentRun[]
+      /** The agent picked in the Agents panel, for its message box. */
+      selectedAgent: string | null
     }
   }
 }

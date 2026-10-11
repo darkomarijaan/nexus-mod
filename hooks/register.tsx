@@ -210,6 +210,7 @@ const leanPick = atom({ plugin: 'nexus', key: 'leanPick' } as const, {} as LeanP
 const mcpView = atom({ plugin: 'nexus', key: 'mcpRows' } as const, [] as McpRow[])
 // The subagents of this session for the Agents panel.
 const agentRuns = atom({ plugin: 'nexus', key: 'agentRuns' } as const, [] as AgentRun[])
+const selectedAgent = atom({ plugin: 'nexus', key: 'selectedAgent' } as const, null as string | null)
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -1065,6 +1066,15 @@ async function messagePeer($: Engine, sessionId: string, text: string): Promise<
     $.ui.toast('Message sent')
   } catch (error) {
     $.ui.toast(`Could not reach that session: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+async function messageAgent($: Engine, agentId: string, text: string): Promise<void> {
+  try {
+    const sent = await $.session.send({ to: { agentId }, text })
+    $.ui.toast(sent.isDelivered ? 'Message sent to the subagent' : `Could not reach that subagent: ${sent.reason}`)
+  } catch (error) {
+    $.ui.toast(`Could not reach that subagent: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -3123,7 +3133,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [now, t, v, cps, working, list, rate, skin, route, pick] = await Promise.all([
+    const [now, t, v, cps, working, list, rate, skin, route, pick, agentList] = await Promise.all([
       read($, hud),
       read($, turn),
       read($, verify),
@@ -3134,6 +3144,7 @@ export const register: Register = (on, options) => {
       read($, themeName),
       read($, provider),
       read($, leanPick),
+      read($, agentRuns),
     ])
     const th = themeOf(skin)
     const ic = th.icons
@@ -3226,6 +3237,9 @@ export const register: Register = (on, options) => {
           <Button key="send" plain hotkey="g" label="Send" onPress={() => void sendPrompt($)} />
           <Button key="sessions" plain hotkey="s" label={isWide ? 'Sessions' : 'Ses'} onPress={() => void openPane($, PANE.sessions, 'Sessions')} />
           <Button key="idea" plain hotkey="i" label="Idea" onPress={() => void openPane($, PANE.idea, 'Idea scratchpad')} />
+          {agentList.length > 0 && (
+            <Button key="agents" plain hotkey="a" label={isWide ? 'Agents' : 'Agt'} onPress={() => void openPane($, PANE.agents, 'Agents')} />
+          )}
           <Button
             key="rollback"
             plain
@@ -3519,7 +3533,9 @@ export const register: Register = (on, options) => {
 
   // Drawer: the subagents of this session, live, then the finished ones.
   on('ui.render', { component: 'Pane', requestId: PANE.agents }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button } = elements
+    const Input = 'Input' in elements ? elements.Input : undefined
     const runs = await read($, agentRuns)
     if (runs.length === 0) return <Text dimColor>{agentSummary(runs)}</Text>
     const th = themeOf(await read($, themeName))
@@ -3528,6 +3544,8 @@ export const register: Register = (on, options) => {
     const room = Math.max(12, e.props.bodyColumns - 40)
     const running = runs.filter(run => run.status === 'running')
     const finished = runs.filter(run => run.status !== 'running').reverse()
+    const chosenId = await read($, selectedAgent)
+    const chosen = [...running, ...finished].find(run => run.id === chosenId)
     const mark = (run: AgentRun) =>
       run.status === 'running' ? (
         <Text color={th.agent}>{ic.dot}</Text>
@@ -3548,12 +3566,18 @@ export const register: Register = (on, options) => {
           const step = stepText(run)
           const activity = activityText(run)
           return (
-            <Box key={`agent-${run.id}`} flexDirection="column">
-              <Text wrap="truncate-end">
-                {index + 1} {mark(run)} <Text color={th.accent}>{run.type}</Text> {clip(run.description, room)}{' '}
+            <Box key={`row-${run.id}`} flexDirection="column">
+              <Button
+                key={`agent-${run.id}`}
+                plain
+                {...(index < 9 ? { hotkey: String(index + 1) } : {})}
+                onPress={() => update($, selectedAgent, () => run.id)}
+              >
+                {run.id === chosen?.id ? '▸ ' : ''}
+                {mark(run)} <Text color={th.accent}>{run.type}</Text> {clip(run.description, room)}{' '}
                 {isQuiet(run, now) ? <Text color={th.warn}>{`${ic.warn} quiet `}</Text> : null}
                 <Text dimColor>{elapsed(now - run.startedAt)}</Text>
-              </Text>
+              </Button>
               <Text wrap="truncate-end" dimColor>
                 {'    '}
                 {shortModel(run.model)} · ctx <Text color={percent >= 80 ? th.bad : th.ok}>{themedBar(percent, th, 8)}</Text> {tokens(run.contextTokens)} ·{' '}
@@ -3569,13 +3593,30 @@ export const register: Register = (on, options) => {
           )
         })}
         {finished.length > 0 && <Text dimColor>Finished</Text>}
-        {finished.map((run, index) => (
-          <Text key={`agent-${run.id}`} wrap="truncate-end">
-            {running.length + index + 1} {mark(run)} <Text color={th.accent}>{run.type}</Text> {clip(run.description, room)}{' '}
-            <Text dimColor>{finishedText(run)}</Text>
-          </Text>
-        ))}
-        <Text dimColor>Esc close</Text>
+        {finished.map((run, index) => {
+          const position = running.length + index
+          return (
+            <Button
+              key={`agent-${run.id}`}
+              plain
+              {...(position < 9 ? { hotkey: String(position + 1) } : {})}
+              onPress={() => update($, selectedAgent, () => run.id)}
+            >
+              {run.id === chosen?.id ? '▸ ' : ''}
+              {mark(run)} <Text color={th.accent}>{run.type}</Text> {clip(run.description, room)} <Text dimColor>{finishedText(run)}</Text>
+            </Button>
+          )
+        })}
+        {chosen !== undefined && chosen.status === 'running' && Input !== undefined && (
+          <Input
+            key="agent-message"
+            placeholder={`Message ${chosen.type}, Enter sends`}
+            onSubmit={value => {
+              if (value.trim() !== '') void messageAgent($, chosen.id, value.trim())
+            }}
+          />
+        )}
+        <Text dimColor>1-9 pick an agent{chosen?.status === 'running' ? ', type to message it' : ''} · Esc close</Text>
       </Box>
     )
   })
