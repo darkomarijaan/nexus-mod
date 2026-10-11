@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 (2026-10-11)
+
+- **Eight more skins**, seventeen in all: `gruvbox`, `mocha` (Catppuccin Mocha), `tokyo` (Tokyo Night), `rosepine`, `monokai`, `latte` (Catppuccin Latte, for light terminals: Claude Code's own theme goes light, daltonized kept), `contrast` (high contrast, Okabe-Ito colorblind-safe hues) and `phosphor` (a green CRT in plain ASCII glyphs). The skin picker gives skins past the ninth the keys `a`-`h`.
+- **`/mcp-nexus` switcher:** with no argument it opens a pane listing every MCP server with its tools, the tokens it keeps in front of Claude and whether it still needs sign-in. One key turns a server off or on in this project; `x` turns off every server not signed in, `o` turns them all back on.
+- `/mcp-nexus off|on` take several names, and part of a name when only one server has it (`/mcp-nexus off gmail calendar`); a part several servers share changes nothing and names them. `off unused` and `on all` switch many at once; `list` prints the aligned list.
+- README: the HUD's `[-]` is Claude Code's fold mark (clicks only reach it in the fullscreen layout; `ctrl+x ctrl+a` works everywhere), and the skins screenshot shows all seventeen.
+
 ## 0.6.0 (2026-10-11)
 
 - **Lean mode:** terse replies and minimal code as rules in the system prompt, on by default (`lite` talk, minimal code on). `/lean-nexus` switches a level or turns them off mid-session (from the next turn; the prompt cache resets once); the pick is remembered across sessions.
