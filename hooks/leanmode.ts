@@ -4,6 +4,7 @@
  */
 
 import type { NexusLeanPick } from '../types'
+import { tokens } from './lean'
 
 export type LeanTalk = 'off' | 'lite' | 'ultra'
 export type LeanSettings = { talk: LeanTalk; code: boolean }
@@ -165,4 +166,92 @@ ${LADDER}
 ${NEVER_CUT} One small test for logic is not excess.
 
 ${changes}${fresh}`
+}
+
+// ── /compress-nexus ──────────────────────────────────────────────────────
+
+export const COMPRESS_RULES = `You compress a Markdown memory file (CLAUDE.md) for an AI coding assistant so it costs fewer tokens.
+- Keep every instruction and fact; drop only filler, repetition and pleasantries.
+- Keep exactly, character for character: fenced code blocks, inline code, commands, file paths, URLs, numbers and headings.
+- Keep the order of sections.
+- Reply with the compressed file only: no preamble, no closing note, no surrounding code fence.`
+
+/** The reply without one code fence wrapped around all of it. */
+export function unwrapFence(reply: string): string {
+  const text = reply.trim()
+  const fenced = /^```[\w-]*\n([\s\S]*?)\n```$/.exec(text)
+
+  return fenced?.[1] ?? text
+}
+
+/** A rough count, about four characters a token. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+
+export type CompressCheck = { ok: true } | { ok: false; reason: string }
+
+const FENCED = /```[\s\S]*?```/g
+const URLS = /https?:\/\/[^\s)>\]`'"]+/g
+const PATHS = /(?:[A-Za-z]:)?(?:~|\.{1,2})?[\\/]?[\w.-]+(?:[\\/][\w.-]+)+[\\/]?/g
+const NUMBERS = /\d+(?:[.,]\d+)*/g
+// "1. " at the start of a list item is numbering, not a fact.
+const LIST_MARKS = /^\s*\d+[.)]\s/gm
+
+function missing(found: readonly string[] | null, text: string): string[] {
+  return [...new Set(found ?? [])].filter(one => !text.includes(one))
+}
+
+function named(list: readonly string[]): string {
+  return list.slice(0, 3).map(one => `\`${one.length > 60 ? `${one.slice(0, 59)}…` : one}\``).join(', ')
+}
+
+/** Whether a compressed file kept everything that must not change. */
+export function checkCompressed(original: string, result: string): CompressCheck {
+  const before = original.replace(/\r\n/g, '\n').trim()
+  const after = result.replace(/\r\n/g, '\n').trim()
+  if (after.length >= before.length) return { ok: false, reason: 'The result is not shorter than the original.' }
+  if (after.length < before.length * 0.3) {
+    return { ok: false, reason: `The result kept only ${Math.round((after.length / before.length) * 100)}% of the text; too much may be gone.` }
+  }
+  const blocks = missing(before.match(FENCED), after)
+  if (blocks.length > 0) return { ok: false, reason: `${blocks.length} code block${blocks.length === 1 ? '' : 's'} changed or missing.` }
+  const prose = before.replace(FENCED, ' ')
+  const urls = missing(prose.match(URLS), after)
+  if (urls.length > 0) return { ok: false, reason: `${urls.length} URL${urls.length === 1 ? '' : 's'} missing: ${named(urls)}.` }
+  const plain = prose.replace(URLS, ' ')
+  const paths = missing(plain.match(PATHS), after)
+  if (paths.length > 0) return { ok: false, reason: `${paths.length} path${paths.length === 1 ? '' : 's'} missing: ${named(paths)}.` }
+  const numbers = missing(plain.replace(LIST_MARKS, ' ').match(NUMBERS), after)
+  if (numbers.length > 0) return { ok: false, reason: `${numbers.length} number${numbers.length === 1 ? '' : 's'} missing: ${named(numbers)}.` }
+
+  return { ok: true }
+}
+
+/** The file to compress: the project's CLAUDE.md, or `arg` (with ~ for home) resolved against the project. */
+export function compressTarget(arg: string, root: string, home: string): string {
+  const one = arg.trim().replace(/\\/g, '/')
+  if (one === '') return `${root}/CLAUDE.md`
+  if (one.startsWith('~/')) return `${home}/${one.slice(2)}`
+  if (/^[A-Za-z]:\//.test(one) || one.startsWith('/')) return one
+
+  return `${root}/${one.replace(/^\.\//, '')}`
+}
+
+/** `<path>.bak-YYYYMMDD-HHMMSS`, in UTC. */
+export function backupName(path: string, ms: number): string {
+  const at = new Date(ms)
+  const two = (n: number) => String(n).padStart(2, '0')
+
+  return `${path}.bak-${at.getUTCFullYear()}${two(at.getUTCMonth() + 1)}${two(at.getUTCDate())}-${two(at.getUTCHours())}${two(at.getUTCMinutes())}${two(at.getUTCSeconds())}`
+}
+
+/** The question before writing: the saving and the opening of the result. */
+export function compressQuestion(name: string, original: string, result: string): string {
+  const from = estimateTokens(original)
+  const to = estimateTokens(result)
+  const lines = result.split('\n')
+  const preview = lines.slice(0, 12).join('\n') + (lines.length > 12 ? '\n…' : '')
+
+  return `Compress ${name}: ≈${tokens(from)} → ≈${tokens(to)} tokens (−${Math.round((1 - to / from) * 100)}%)? The original is kept as a backup.\n\n${preview}`
 }

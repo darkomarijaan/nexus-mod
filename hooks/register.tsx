@@ -57,6 +57,12 @@ import {
   validateProfile,
 } from './provider'
 import {
+  backupName,
+  checkCompressed,
+  COMPRESS_RULES,
+  compressQuestion,
+  compressTarget,
+  estimateTokens,
   isOverride,
   isSafeBase,
   LEAN_NOTE,
@@ -71,6 +77,7 @@ import {
   reviewPrompt,
   summaryRules,
   untrackedFiles,
+  unwrapFence,
   type LeanPick,
   type LeanSettings,
 } from './leanmode'
@@ -1126,6 +1133,44 @@ async function runLeanReview($: Engine, args: string): Promise<string> {
   return `Lean review${base === null ? '' : ` against ${base}`} sent to Claude${isLarge ? ' (diff too large: file list only)' : ''}.`
 }
 
+const COMPRESS_WRITE = 'Write'
+
+/** Compresses a memory file with the helper model, checks it, asks, then backs up and writes. */
+async function runCompress($: Engine, cfg: NexusConfig, args: string): Promise<string> {
+  const path = compressTarget(args, await projectRoot($), await homeDir($))
+  const name = path.split('/').pop() ?? path
+  const original = await $.fs.read(path).catch(() => null)
+  if (typeof original !== 'string' || original.trim() === '') return `Nothing to compress: ${path} is missing or empty.`
+  await update($, busy, () => `Compressing ${name}`)
+  let reply: Awaited<ReturnType<Engine['model']['complete']>> | null = null
+  try {
+    reply = await $.model.complete({ model: cfg.helperModel, system: COMPRESS_RULES, prompt: original, maxTokens: 8000, timeoutMs: 120_000 })
+  } catch {
+    reply = null
+  } finally {
+    await update($, busy, () => null)
+  }
+  if (reply === null) return `Compression failed; ${name} is untouched.`
+  if (!reply.isAnswered) return `Compression failed (${reply.reason}); ${name} is untouched.`
+  const result = unwrapFence(reply.text)
+  const check = checkCompressed(original, result)
+  if (!check.ok) return `Not written: ${check.reason} ${name} is untouched.`
+  const answer = await $.ui
+    .ask(compressQuestion(name, original, result), { header: 'Compress', options: [COMPRESS_WRITE, 'Cancel'] })
+    .catch(() => 'Cancel')
+  if (answer !== COMPRESS_WRITE) return `Cancelled; ${name} is untouched.`
+  if ((await $.fs.read(path).catch(() => null)) !== original) return `${name} changed while you were deciding; nothing written. Run /compress-nexus again.`
+  const backup = backupName(path, await $.clock.now())
+  try {
+    await $.fs.write(backup, original)
+  } catch {
+    return `Could not write the backup ${backup}; ${name} is untouched.`
+  }
+  await $.fs.write(path, result.endsWith('\n') ? result : `${result}\n`)
+
+  return `Compressed ${name}: ≈${tokens(estimateTokens(original))} → ≈${tokens(estimateTokens(result))} tokens. Original kept at ${backup}.`
+}
+
 // ── Session handoff ──────────────────────────────────────────────────────
 
 async function handoffKey($: Engine): Promise<string> {
@@ -2165,6 +2210,7 @@ const COMMANDS = [
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
   { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
   { name: 'lean-review-nexus', description: 'Nexus: Claude reviews the uncommitted changes (or those since a base) for over-engineering; edits nothing', argumentHint: '[base]' },
+  { name: 'compress-nexus', description: 'Nexus: shorten CLAUDE.md (or another memory file) with the helper model; shows the saving, asks, keeps a backup', argumentHint: '[file]' },
 ] as const
 
 const DESIGN_SCHEMA = {
@@ -2359,6 +2405,8 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'lean-nexus' }, async ($, e) => ({ text: await runLean($, cfg, e.args) }))
 
   on('command.run', { command: 'lean-review-nexus' }, async ($, e) => ({ text: await runLeanReview($, e.args) }))
+
+  on('command.run', { command: 'compress-nexus' }, async ($, e) => ({ text: await runCompress($, cfg, e.args) }))
 
   on('command.run', { command: 'provider-nexus' }, async ($, e) => {
     if ((await ensureRouterLink($)) !== null) void watchRouter($, cfg, false).catch(() => undefined)

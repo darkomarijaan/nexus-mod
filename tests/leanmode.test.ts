@@ -5,6 +5,9 @@ import { readConfig } from '../hooks/config'
 import { nextStepFrom } from '../hooks/insights'
 import { footerText } from '../hooks/lean'
 import {
+  backupName,
+  checkCompressed,
+  compressTarget,
   isOverride,
   isSafeBase,
   leanBadge,
@@ -16,6 +19,7 @@ import {
   reviewPrompt,
   summaryRules,
   untrackedFiles,
+  unwrapFence,
 } from '../hooks/leanmode'
 
 describe('lean settings', () => {
@@ -405,5 +409,157 @@ describe('/lean-review-nexus', () => {
     const sent = submissions(on)
     expect((await $.command.run({ command: 'lean-review-nexus', args: 'nope' } as never)).text).toContain("fatal: bad revision 'nope'")
     expect(sent).toEqual([])
+  })
+})
+
+const CLAUDE_MD = [
+  '# Project rules',
+  '',
+  'Please always make sure that you run the tests with `npm test` before you say that the work is done, it is really important.',
+  'The launcher lives in bin/claude-nexus.cmd and the docs are at https://example.com/docs for reference.',
+  'We basically support up to 3 retries in total, so please keep that in mind at all times.',
+  '',
+  '```sh',
+  'npm run build',
+  '```',
+].join('\n')
+
+const SHORT_MD = [
+  '# Project rules',
+  '',
+  'Run `npm test` before saying done.',
+  'Launcher: bin/claude-nexus.cmd. Docs: https://example.com/docs',
+  'Max 3 retries.',
+  '',
+  '```sh',
+  'npm run build',
+  '```',
+].join('\n')
+
+describe('compress check', () => {
+  test('a faithful shorter version passes', () => {
+    expect(checkCompressed(CLAUDE_MD, SHORT_MD)).toEqual({ ok: true })
+  })
+
+  test('CRLF original passes against an LF result', () => {
+    expect(checkCompressed(CLAUDE_MD.replace(/\n/g, '\r\n'), SHORT_MD)).toEqual({ ok: true })
+  })
+
+  const refused = (result: string) => {
+    const check = checkCompressed(CLAUDE_MD, result)
+    return check.ok ? '' : check.reason
+  }
+
+  test('a changed code block is refused', () => {
+    expect(refused(SHORT_MD.replace('npm run build', 'npm run b'))).toContain('code block')
+  })
+
+  test('a lost path, URL or number is refused and named', () => {
+    expect(refused(SHORT_MD.replace('Launcher: bin/claude-nexus.cmd. ', ''))).toContain('bin/claude-nexus.cmd')
+    expect(refused(SHORT_MD.replace(' Docs: https://example.com/docs', ''))).toContain('https://example.com/docs')
+    expect(refused(SHORT_MD.replace('Max 3 retries.', 'Max 5 retries.'))).toContain('3')
+  })
+
+  test('a result that is not shorter, or kept too little, is refused', () => {
+    expect(refused(`${CLAUDE_MD}\nMore.`)).toContain('not shorter')
+    expect(refused('# Project rules')).toContain('kept only')
+  })
+
+  test('an outer fence around the reply is dropped', () => {
+    expect(unwrapFence(`\`\`\`markdown\n${SHORT_MD}\n\`\`\``)).toBe(SHORT_MD)
+    expect(unwrapFence(`\n${SHORT_MD}\n`)).toBe(SHORT_MD)
+  })
+})
+
+describe('compress target and backup', () => {
+  test('the target defaults to the project CLAUDE.md and expands ~', () => {
+    expect(compressTarget('', 'C:/app', 'C:/Users/me')).toBe('C:/app/CLAUDE.md')
+    expect(compressTarget('~/.claude/CLAUDE.md', 'C:/app', 'C:/Users/me')).toBe('C:/Users/me/.claude/CLAUDE.md')
+    expect(compressTarget('docs\\RULES.md', 'C:/app', 'C:/Users/me')).toBe('C:/app/docs/RULES.md')
+    expect(compressTarget('./CLAUDE.md', 'C:/app', 'C:/Users/me')).toBe('C:/app/CLAUDE.md')
+    expect(compressTarget('D:\\work\\CLAUDE.md', 'C:/app', 'C:/Users/me')).toBe('D:/work/CLAUDE.md')
+  })
+
+  test('the backup name carries the UTC time', () => {
+    expect(backupName('C:/app/CLAUDE.md', Date.UTC(2026, 9, 11, 8, 5, 9))).toBe('C:/app/CLAUDE.md.bak-20261011-080509')
+  })
+})
+
+const NOW = Date.UTC(2026, 9, 11, 8, 5, 9)
+
+/** A project whose CLAUDE.md reads `files[0]` first and `files[1]` on any later read. */
+function compressWorld(on: On, opts: { reply?: unknown; answer?: string; files?: string[] } = {}) {
+  const writes: { path: string; text: string }[] = []
+  const asked: string[] = []
+  let reads = 0
+  on('session.root', () => ({ value: 'C:/app' }))
+  on('env.get', () => ({ value: undefined }))
+  on('clock.now', () => ({ value: NOW }))
+  on('fs.read', () => {
+    const files = opts.files ?? [CLAUDE_MD]
+    const text = files[Math.min(reads, files.length - 1)]
+    reads += 1
+    if (text === undefined) throw new Error('ENOENT')
+    return { value: text }
+  })
+  on('fs.write', (_, e) => {
+    writes.push({ path: e.path, text: e.text })
+    return { value: undefined } as never
+  })
+  on('model.complete', () => ({ value: opts.reply ?? { isAnswered: true, text: SHORT_MD, usage: {} } }) as never)
+  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+    const question = e.questions[0]?.question ?? ''
+    asked.push(question)
+    return { result: { questions: e.questions, answers: { [question]: opts.answer ?? 'Write' } } }
+  })
+  return { writes, asked }
+}
+
+describe('/compress-nexus', () => {
+  test('Write keeps a backup first, then writes the shorter file', { options: BASE }, async ($, on) => {
+    const world = compressWorld(on)
+    const answer = await $.command.run({ command: 'compress-nexus', args: '' } as never)
+    expect(world.asked[0]).toContain('CLAUDE.md')
+    expect(world.asked[0]).toContain('→')
+    // the host hands fs.write hooks its own path spelling (backslashes on Windows)
+    expect(world.writes.map(write => write.path.replace(/\\/g, '/'))).toEqual(['C:/app/CLAUDE.md.bak-20261011-080509', 'C:/app/CLAUDE.md'])
+    expect(world.writes[0]?.text).toBe(CLAUDE_MD)
+    expect(world.writes[1]?.text).toBe(`${SHORT_MD}\n`)
+    expect(answer.text).toContain('CLAUDE.md.bak-20261011-080509')
+  })
+
+  test('Cancel writes nothing', { options: BASE }, async ($, on) => {
+    const world = compressWorld(on, { answer: 'Cancel' })
+    expect((await $.command.run({ command: 'compress-nexus', args: '' } as never)).text).toContain('untouched')
+    expect(world.writes).toEqual([])
+  })
+
+  test('a helper failure writes nothing and asks nothing', { options: BASE }, async ($, on) => {
+    const world = compressWorld(on, { reply: { isAnswered: false, reason: 'api-error', status: 500, error: 'boom', usage: {} } })
+    expect((await $.command.run({ command: 'compress-nexus', args: '' } as never)).text).toContain('Compression failed (api-error)')
+    expect(world.asked).toEqual([])
+    expect(world.writes).toEqual([])
+  })
+
+  test('a result that loses a path is refused before asking', { options: BASE }, async ($, on) => {
+    const lossy = SHORT_MD.replace('Launcher: bin/claude-nexus.cmd. ', '')
+    const world = compressWorld(on, { reply: { isAnswered: true, text: lossy, usage: {} } })
+    const answer = await $.command.run({ command: 'compress-nexus', args: '' } as never)
+    expect(answer.text).toContain('Not written')
+    expect(answer.text).toContain('bin/claude-nexus.cmd')
+    expect(world.asked).toEqual([])
+    expect(world.writes).toEqual([])
+  })
+
+  test('a file edited while deciding is left alone', { options: BASE }, async ($, on) => {
+    const world = compressWorld(on, { files: [CLAUDE_MD, `${CLAUDE_MD}\nA new rule.`] })
+    expect((await $.command.run({ command: 'compress-nexus', args: '' } as never)).text).toContain('changed while you were deciding')
+    expect(world.writes).toEqual([])
+  })
+
+  test('a missing file is refused', { options: BASE }, async ($, on) => {
+    const world = compressWorld(on, { files: [] })
+    expect((await $.command.run({ command: 'compress-nexus', args: 'NOPE.md' } as never)).text).toContain('missing or empty')
+    expect(world.writes).toEqual([])
   })
 })
