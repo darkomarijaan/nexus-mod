@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/darkomarijaan/nexus-mod/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/darkomarijaan/nexus-mod?label=release&color=7c5cff"></a>
+  <a href="https://github.com/darkomarijaan/nexus-mod/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/darkomarijaan/nexus-mod?label=release&display_name=release&color=7c5cff"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/darkomarijaan/nexus-mod?color=3fb950"></a>
   <img alt="Claude Code 2.1.296+" src="https://img.shields.io/badge/Claude%20Code-2.1.296%2B-d97757">
   <img alt="Zero dependencies" src="https://img.shields.io/badge/dependencies-0-56d4dd">
