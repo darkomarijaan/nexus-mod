@@ -134,6 +134,7 @@ Switch with `/skin-nexus` (keys `1`-`9`, then `a`-`h`) or `ctrl+x tab t`; the pi
 
 - **Prompt enhancer**: `ctrl+x tab e` (or `/enhance-nexus <rough prompt>`) rewrites a rough prompt as Goal / Context / Acceptance criteria in the prompt box, for you to read before sending.
 - **Sessions**: `/sessions-nexus` lists every Claude Code session on the machine with its subagents; inspect one, ask it to pause, message it or copy its resume command.
+- **Agents panel**: `/agents-nexus` (or `ctrl+x tab a` once a subagent has run) follows every subagent of the session live: its model, a context bar, how many tools it ran and the last one, how long it has run, a `⚠ quiet` mark after two minutes without a tool, and the steps it reports (`step 3/5 writing tests`). Finished ones stay listed with their time, tools and tokens. Pick one with `1`-`9` and type to send it a message. Inspired by [savvy-progress](https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress).
 - **Session handoff**: each session's summary is saved, the next session in the project shows it, and `/handoff-nexus` hands it to Claude.
 - **Idea pad**: `/idea-nexus <text>` saves an idea to `.claude/ideas.md` without interrupting Claude.
 - **Subagent cap**: refuse new subagents past a number you set.
@@ -186,6 +187,7 @@ From a local folder, first replace its contents with the new release (`git pull`
 |---|---|
 | `/nexus` | Status of every module, and the keys |
 | `/sessions-nexus` | Every Claude Code session on this machine: inspect, ask one to pause, message it, copy its resume command |
+| `/agents-nexus` | The subagents of this session, live: model, context, tools, last activity, steps; message a running one |
 | `/idea-nexus <text>` | Save an idea to `.claude/ideas.md` without interrupting Claude (no text opens the scratchpad) |
 | `/rollback-nexus` | Put the project back as it was before the latest turn (edits you made since are undone too). Also `list`, a number (`/rollback-nexus 3`) and `undo` |
 | `/preview-nexus [url]` | Screenshot the dev server; run it again after changes for a before and after |
@@ -208,6 +210,7 @@ From a local folder, first replace its contents with the new release (`git pull`
 | `g` | Send |
 | `s` | Sessions |
 | `i` | Idea |
+| `a` | Agents (once a subagent has run in this session) |
 | `z` | Rollback |
 | `p` | Preview |
 | `t` | Skin (on a wide terminal) |
@@ -265,6 +268,7 @@ Change these with `/plugin configure nexus@nexus-mod` (or `/plugin`, pick nexus,
 | Session handoff | on | Save each session's summary for the next |
 | Loop detector | on | Break repeated failing calls; flag 20-minute turns |
 | Max subagents at once | `0` | Refuse new subagents past this many (0: no limit) |
+| Agent step reports | on | Give subagents a `step` tool to report their progress to the Agents panel |
 | Next-step suggestion | on | Offer the reply's first Next Step as the prompt suggestion |
 | Commit helper | on | Commit button and `/commit-nexus` |
 | Theme | `default` | Starting skin; a `/skin-nexus` pick overrides it until `/skin-nexus reset` |

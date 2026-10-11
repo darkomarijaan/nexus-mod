@@ -2375,9 +2375,9 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     '  warning when a reply was cut off; the active task with its progress.',
     '',
     'Keys: ctrl+x tab focuses the bar above the prompt, then',
-    '  e Enhance   g Send   s Sessions   i Idea   z Rollback   p Preview   t Skin   c Commit',
+    '  e Enhance   g Send   s Sessions   i Idea   a Agents   z Rollback   p Preview   t Skin   c Commit',
     '  (so ctrl+x tab s opens Sessions, ctrl+x tab z rolls back)',
-    '  The same without the keys: /enhance-nexus <prompt>, /sessions-nexus, /idea-nexus, /rollback-nexus, /preview-nexus, /skin-nexus, /commit-nexus',
+    '  The same without the keys: /enhance-nexus <prompt>, /sessions-nexus, /agents-nexus, /idea-nexus, /rollback-nexus, /preview-nexus, /skin-nexus, /commit-nexus',
     'Turn any module on or off: /plugin configure nexus@nexus-mod',
   ].join('\n')
 }
