@@ -450,8 +450,15 @@ describe('compress check', () => {
     return check.ok ? '' : check.reason
   }
 
-  test('a changed code block is refused', () => {
-    expect(refused(SHORT_MD.replace('npm run build', 'npm run b'))).toContain('code block')
+  test('a changed code block is refused, named by its first line', () => {
+    const reason = refused(SHORT_MD.replace('npm run build', 'npm run b'))
+    expect(reason).toContain('code block')
+    expect(reason).toContain('npm run build')
+  })
+
+  test('a code block whose fence only gains or changes its language passes', () => {
+    expect(checkCompressed(CLAUDE_MD, SHORT_MD.replace('```sh', '```bash'))).toEqual({ ok: true })
+    expect(checkCompressed(CLAUDE_MD.replace('```sh', '```'), SHORT_MD)).toEqual({ ok: true })
   })
 
   test('a lost path, URL or number is refused and named', () => {

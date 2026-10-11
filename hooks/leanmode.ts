@@ -200,6 +200,10 @@ export function estimateTokens(text: string): number {
 export type CompressCheck = { ok: true } | { ok: false; reason: string }
 
 const FENCED = /```[\s\S]*?```/g
+// A fenced block's content without its fence line, so a language added to the fence (``` → ```sh) changes nothing.
+const BLOCK_BODY = /```[^\n`]*\n([\s\S]*?)```/g
+
+const blockBodies = (text: string) => [...text.matchAll(BLOCK_BODY)].map(match => (match[1] ?? '').replace(/\s+$/, ''))
 const INLINE_CODE = /`[^`\n]+`/g
 const URLS = /https?:\/\/[^\s)>\]`'"]+/g
 const SLASHED = /(?:[A-Za-z]:)?[\w.~-]*(?:[\\/][\w.~-]+)+[\\/]?/g
@@ -241,8 +245,12 @@ export function checkCompressed(original: string, result: string): CompressCheck
   if (after.length < before.length * 0.3) {
     return { ok: false, reason: `The result kept only ${Math.round((after.length / before.length) * 100)}% of the text; too much may be gone.` }
   }
-  const blocks = missing(before.match(FENCED) ?? [], one => after.includes(one))
-  if (blocks.length > 0) return { ok: false, reason: `${blocks.length} code block${blocks.length === 1 ? '' : 's'} changed or missing.` }
+  const kept = new Set(blockBodies(after))
+  const blocks = missing(blockBodies(before), one => kept.has(one))
+  if (blocks.length > 0) {
+    const firstLines = blocks.map(block => block.split('\n').find(line => line.trim() !== '') ?? '(empty block)')
+    return { ok: false, reason: `${blocks.length} code block${blocks.length === 1 ? '' : 's'} changed or missing: ${named(firstLines)}.` }
+  }
   const prose = before.replace(FENCED, ' ')
   const inline = missing(prose.match(INLINE_CODE) ?? [], one => after.includes(one))
   if (inline.length > 0) return { ok: false, reason: `${inline.length} inline code span${inline.length === 1 ? '' : 's'} changed or missing: ${named(inline)}.` }
