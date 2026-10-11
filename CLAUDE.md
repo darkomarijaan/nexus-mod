@@ -23,7 +23,7 @@ Type-check: no local TypeScript install. The repo `tsconfig.json` extends `.clau
 
 Trying changes in a real session: the installed copy lives in `~/.claude/plugins/cache/nexus-mod/nexus/<version>`. After editing, run `claude plugin update nexus@nexus-mod` (or `/reload-plugins`), or start a session with `claude --plugin-dir <this folder>` to load the working tree directly.
 
-Release zip (`nexus-mod.zip`, git-ignored, built only when asked): `Compress-Archive -Path .claude-plugin, bin, bridge, hooks, types, tests, README.md, CHANGELOG.md, LICENSE, tsconfig.json -DestinationPath nexus-mod.zip`.
+Release (only when asked): bump `.claude-plugin/plugin.json` `version`, add the `CHANGELOG.md` entry and move "(this version)" in README's Roadmap; build `nexus-mod.zip` (git-ignored; leaves out `docs/` and `CLAUDE.md`) with `Compress-Archive -Path .claude-plugin, bin, bridge, hooks, types, tests, README.md, CHANGELOG.md, LICENSE, tsconfig.json -DestinationPath nexus-mod.zip`; push, tag `nexus--v<version>`, then `gh release create nexus--v<version> nexus-mod.zip --title "Nexus v<version>" --notes-file <notes>`, where the notes are that version's CHANGELOG section plus the line ``Install: unzip `nexus-mod.zip` and follow the README. Full history in [CHANGELOG.md](https://github.com/darkomarijaan/nexus-mod/blob/main/CHANGELOG.md).``
 
 ## Architecture
 
@@ -40,11 +40,12 @@ Release zip (`nexus-mod.zip`, git-ignored, built only when asked): `Compress-Arc
 - `$.prompt.submit` called from inside a `command.run` hook is refused by the host ("it would wait on the turn this hook is holding"). Defer it: `$.clock.after(0, () => void $.prompt.submit(...))`. In tests, drive it with `mock.clock(on)` + `clock.advance(1)` / `clock.settle()`.
 - On Windows the host hands `fs.write` hooks backslash paths (`C:\app\...`) even when the plugin wrote forward slashes. Normalise in test assertions.
 - Hook tests: the kit is `import { describe, expect, mock, test } from 'claude-code/testing'`; `test(name, { options: {...userConfig} }, async ($, on) => ...)`. `on(...)` in a test answers *beneath* the plugin (it plays the engine). Turn off unrelated modules in `options` (see the `BASE`/`QUIET` objects at the top of test files). Use `mock.store(on)` for `$.store`. Answer `AskUserQuestion` dialogs with `on('tool.call', { tool: 'AskUserQuestion' }, ...)`.
-- `claude plugin validate` prints many `gating hook without .catch` lines. Those are pre-existing notes, not failures. Only `✘` lines fail it.
+- `claude plugin validate` prints many `gating hook without .catch` lines, and a warning that a root `CLAUDE.md` is not loaded as plugin context. Both are expected. Only `✘` lines fail it.
 
 ## Conventions
 
+- The GitHub repo is **public** (MIT). The owner's real provider hub address and its profile name were purged from all history; never write them into a tracked file, commit message, release note or zip. Examples and tests use `https://hub.example.com/v1` and the profile `myhub`.
 - User-facing strings (command output, toasts, dialogs) are English. The repo owner chats in Indonesian.
-- Versions: `.claude-plugin/plugin.json` `version`, the "Version x.y.z" line at the top of README, and a `CHANGELOG.md` entry move together. Releases are tagged `nexus--v<version>` on GitHub with the zip attached.
+- README images in `docs/screenshots/` were rendered from Nexus's own components (`AbovePrompt` mounted in a throwaway `claude plugin test` scene with demo data in a fictional `shop` project, the real `designPage`, the real `maskSecrets` on fake values). They go stale when the HUD changes; keep any new ones on demo data.
 - Designs and plans live in `docs/superpowers/specs/` and `docs/superpowers/plans/` (written in Indonesian). README's Roadmap lists what is next.
 - Commits end with a `Co-Authored-By:` trailer.
