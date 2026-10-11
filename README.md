@@ -1,6 +1,6 @@
 # Nexus: a Claude Code mod
 
-Version 0.5.1 ([changelog](CHANGELOG.md)).
+Version 0.6.0 ([changelog](CHANGELOG.md)).
 
 An all-in-one workspace suite for Claude Code:
 
@@ -20,6 +20,7 @@ An all-in-one workspace suite for Claude Code:
 - **Context audit**: `/context-nexus` shows where the context goes before you type (MCP servers, CLAUDE.md and other memory files, skills by plugin, agent types) and what could go.
 - **MCP servers per project**: `/mcp-nexus off <server>` keeps a server's tools out of Claude's way in this project (a one-line note behind ToolSearch, calls refused); `/mcp-nexus on <server>` brings it back.
 - **Trimmed noisy output**: long install, build, test and log output reaches Claude with its routine lines folded (problems, head and tail kept); the whole output is saved to a file Claude can read.
+- **Lean mode**: terse replies (`lite` by default, `ultra` for telegraphic) and minimal code (Claude checks whether the code is needed, already in the codebase, in the standard library or a native feature before writing new code). Switch it with `/lean-nexus`; the HUD shows `✂ lite · min` while it is on.
 - **Quota guard**: when the 5-hour or weekly limit passes 90% (configurable), Nexus asks whether the running turn goes on, or, between turns, whether your next prompt goes; once per window.
 - **Turn footer**: a dim line under each answer, `⏱ 3m 12s · 14 tools · 4 files · ctx 42% · checks ✓`.
 - **Provider router**: start Claude Code with `claude-nexus` and switch the session between your Claude subscription and your own hub (URL, API key, models for opus/sonnet/haiku) without a restart. When Claude's plan limit is hit, Nexus offers to continue the same turn on a hub, and offers Claude again once the quota resets. Plain `claude` is untouched and keeps Remote Control; a `claude-nexus` session has no Remote Control (Claude Code turns it off whenever `ANTHROPIC_BASE_URL` is set).
@@ -96,6 +97,9 @@ Use these paths, not the copy under `.claude\plugins\cache\...`: that folder's n
 | `/enhance-nexus <rough prompt>` | Rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box, to read before sending |
 | `/context-nexus` | Where the context goes before you type, and what could go |
 | `/mcp-nexus` | MCP servers in this project; `/mcp-nexus off <server>`, `/mcp-nexus on <server>` |
+| `/lean-nexus` | Terse replies and minimal code: `/lean-nexus talk off\|lite\|ultra`, `/lean-nexus code on\|off`, `/lean-nexus off`, `/lean-nexus reset` (back to Settings) |
+| `/lean-review-nexus` | Claude reviews the uncommitted changes (or `/lean-review-nexus main`) for over-engineering and reports `file:line` findings; edits nothing |
+| `/compress-nexus` | Shortens `CLAUDE.md` (or `/compress-nexus <file>`) with the helper model, shows the saving, asks, and keeps `<file>.bak-<time>` |
 | `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
 | `/provider-nexus` | Provider profiles: add, edit, test, use. Also `/provider-nexus <name\|claude>` (switch), `/provider-nexus status`, `/provider-nexus test <name>` |
 
@@ -167,6 +171,8 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 | Theme | `default` | Starting theme; a `/skin-nexus` pick overrides it until `/skin-nexus reset` |
 | Claude Code theme follows the skin | on | A dark skin moves Claude Code's own theme to dark (daltonized kept), `ascii` to ANSI; `default` and `claude` put your own theme back |
 | Trim noisy output | on | Fold routine lines of long install, build, test and log output |
+| Lean talk | lite | Terse replies: off, lite or ultra |
+| Minimal code | on | Climb the minimal-code ladder before writing code |
 | Quota guard | `90` % | Ask before going on past this share of the 5-hour or weekly limit (0: off) |
 | Turn footer | on | Time, tools, files, context and checks under each answer |
 | Provider fallback | `ask` | In a `claude-nexus` session, when Claude's plan limit is hit: `ask`, `auto` (default fallback profile) or `off` |
@@ -182,7 +188,8 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 
 ## Roadmap
 
-- **v0.5** (this version): provider router; v0.5.1: one-key switch, switching from a plain session by resuming it under claude-nexus.
-- **v0.6**: test-tamper guard, evidence check before "done", `/review-nexus`.
-- **v0.7**: hunk-level diff review, plan annotation in the browser.
+- **v0.5**: provider router; v0.5.1: one-key switch, switching from a plain session by resuming it under claude-nexus.
+- **v0.6** (this version): lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`.
+- **v0.7**: test-tamper guard, evidence check before "done", `/review-nexus`.
+- **v0.8**: hunk-level diff review, plan annotation in the browser.
 - Later: Telegram remote control, session search, worktree cockpit.

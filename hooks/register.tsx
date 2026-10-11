@@ -2263,7 +2263,7 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     `  Quiet transcript    ${on(cfg.quietTranscript)}`,
     `  Executive summary   ${on(cfg.executiveSummary)}`,
     `  Lean talk           ${lean.talk}${over}  /lean-nexus [talk off|lite|ultra] [code on|off] | reset`,
-    `  Minimal code        ${lean.code ? 'on' : 'off'}${over}`,
+    `  Minimal code        ${lean.code ? 'on' : 'off'}${over}  /lean-review-nexus [base]  /compress-nexus [file]`,
     `  Design Lens         ${on(cfg.designLens)}  /preview-nexus [url] [base]`,
     `  Done/approval alert ${on(cfg.notify)}  after turns of ${Math.round(cfg.notifyAfterMs / 1000)}s or more`,
     `  Compaction guard    ${on(cfg.compactGuard)}  reminds Claude of your last request after compaction`,
