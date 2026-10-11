@@ -145,6 +145,27 @@ export type NexusLeanPick = { talk?: 'off' | 'lite' | 'ultra'; code?: boolean }
 /** One MCP server as /mcp-nexus shows it in this project. */
 export type NexusMcpRow = { name: string; tools: number; tokens: number; needsSignIn: boolean; isOff: boolean }
 
+/** One subagent of this session as the Agents panel shows it. */
+export type NexusAgentRun = {
+  id: string
+  type: string
+  description: string
+  model: string
+  /** ended: gone from the engine's list without a turn.complete seen. */
+  status: 'running' | 'done' | 'failed' | 'ended'
+  startedAt: number
+  endedAt: number | null
+  tools: number
+  lastTool: string | null
+  lastDetail: string | null
+  lastActivityAt: number
+  /** The last request's input, cache reads and writes, and output. */
+  contextTokens: number
+  /** Every request's, summed. */
+  tokens: number
+  step: { done: number; total: number; note: string | null } | null
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'nexus': {
