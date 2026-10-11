@@ -1,6 +1,6 @@
 # Nexus: a Claude Code mod
 
-Version 0.5.1.
+Version 0.5.1 ([changelog](CHANGELOG.md)).
 
 An all-in-one workspace suite for Claude Code:
 
