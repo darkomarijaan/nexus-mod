@@ -1,5 +1,6 @@
 import type { PluginOptions } from 'claude-code'
 
+import { isLeanTalk, type LeanTalk } from './leanmode'
 import { DEFAULT_THEME, isTheme } from './theme'
 
 export type AuditMode = 'plan' | 'first-edit' | 'off'
@@ -15,6 +16,8 @@ export type NexusConfig = {
   verifyTimeoutMs: number
   quietTranscript: boolean
   executiveSummary: boolean
+  leanTalk: LeanTalk
+  leanCode: boolean
   designLens: boolean
   devServerUrl: string
   helperModel: string
@@ -47,6 +50,7 @@ export function readConfig(options: PluginOptions): NexusConfig {
   const audit = text(options.assumptionAudit, 'plan')
   const theme = text(options.theme, DEFAULT_THEME).trim().toLowerCase()
   const fallback = text(options.fallbackMode, 'ask')
+  const talk = text(options.leanTalk, 'lite').trim().toLowerCase()
 
   return {
     shield: flag(options.shield, true),
@@ -62,6 +66,8 @@ export function readConfig(options: PluginOptions): NexusConfig {
     verifyTimeoutMs: Math.min(600, Math.max(10, count(options.verifyTimeoutSec, 180))) * 1000,
     quietTranscript: flag(options.quietTranscript, true),
     executiveSummary: flag(options.executiveSummary, true),
+    leanTalk: isLeanTalk(talk) ? talk : 'lite',
+    leanCode: flag(options.leanCode, true),
     designLens: flag(options.designLens, true),
     devServerUrl: text(options.devServerUrl, '').trim(),
     helperModel: text(options.helperModel, 'haiku').trim() || 'haiku',
