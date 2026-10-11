@@ -113,9 +113,9 @@ When Claude would offer a choice between layouts, palettes, typography or compon
 
 ### Skins
 
-<img src="docs/screenshots/skins.png" alt="The HUD in all nine skins: default, claude, dracula, nord, ocean, sunset, forest, mono and ascii" width="100%">
+<img src="docs/screenshots/skins.png" alt="The HUD in all seventeen skins: default, claude, dracula, nord, ocean, sunset, forest, mono, ascii, gruvbox, mocha, tokyo, rosepine, monokai, latte, contrast and phosphor" width="100%">
 
-Seventeen looks for the HUD and drawers, each with its own colors, bar glyphs, icons and borders. The nine above: `default`, `claude` (follows Claude Code's own `/theme`), `dracula`, `nord`, `ocean`, `sunset`, `forest`, `mono` and `ascii` (for fonts without Unicode). And eight more:
+Seventeen looks for the HUD and drawers, each with its own colors, bar glyphs, icons and borders. The first nine: `default`, `claude` (follows Claude Code's own `/theme`), `dracula`, `nord`, `ocean`, `sunset`, `forest`, `mono` and `ascii` (for fonts without Unicode). And eight more:
 
 | Skin | Look |
 |---|---|
