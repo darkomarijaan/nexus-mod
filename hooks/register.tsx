@@ -46,9 +46,13 @@ import {
   nextStep,
   normalizeHubUrl,
   parseProviderArgs,
+  pendingRouteFor,
   primaryModel,
   readProfiles,
+  restartCommand,
   routerLinkFrom,
+  toggleTarget,
+  type PendingRoute,
   type ProviderProfile,
   validateProfile,
 } from './provider'
@@ -1514,15 +1518,19 @@ async function crossedQuota($: Engine, cfg: NexusConfig, limits: readonly Window
 }
 
 /** Mid-turn, asks whether the turn goes on; an answer of stop ends it. */
-async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo?: string, resetsAt: number | null = null): Promise<void> {
+async function askQuotaMidTurn($: Engine, what: string, turnId: string, switchTo?: string, resetsAt: number | null = null, isLinked = true): Promise<void> {
   await setWaiting($, true)
   try {
-    const options = switchTo === undefined ? [QUOTA_KEEP, QUOTA_STOP] : [QUOTA_KEEP, `Switch to ${switchTo} now`, QUOTA_STOP]
+    // In a plain session the way to a hub is a restart under claude-nexus, so the offer says so.
+    const switchLabel = switchTo === undefined ? undefined : isLinked ? `Switch to ${switchTo} now` : `Go on with ${switchTo} (copies a restart command)`
+    const options = switchLabel === undefined ? [QUOTA_KEEP, QUOTA_STOP] : [QUOTA_KEEP, switchLabel, QUOTA_STOP]
     const answer = await $.ui.ask(`⚠ QUOTA: ${what}. Let this turn keep going?`, { header: 'Quota', options })
     if (answer === QUOTA_STOP) {
       await $.turn.abort({ turnId })
       $.ui.toast('Turn stopped to save quota.')
-    } else if (switchTo !== undefined && answer === `Switch to ${switchTo} now`) {
+    } else if (switchTo !== undefined && !isLinked && answer === switchLabel) {
+      $.ui.toast(await restartOn($, switchTo), { timeoutMs: 15_000 })
+    } else if (switchTo !== undefined && answer === switchLabel) {
       $.ui.toast(await useRoute($, switchTo, { askCompact: false }))
       // Claude comes back when the crossed window resets: the turn's end offers the way back then.
       if (resetsAt !== null && (await read($, provider)).route === switchTo) await update($, claudeBackAt, () => resetsAt)
@@ -1610,7 +1618,8 @@ function summarize(profile: ProviderProfile) {
 
 async function loadProfiles($: Engine): Promise<ProviderProfile[]> {
   const list = readProfiles(await $.store.get(PROVIDERS_KEY).catch(() => null))
-  await update($, provider, now => ({ ...now, profiles: list.map(summarize) }))
+  const last = await $.store.get(LAST_HUB_KEY).catch(() => null)
+  await update($, provider, now => ({ ...now, profiles: list.map(summarize), lastHub: typeof last === 'string' ? last : null }))
 
   return list
 }
@@ -1621,7 +1630,36 @@ async function saveProfiles($: Engine, list: ProviderProfile[]): Promise<void> {
 }
 
 const NOT_LINKED =
-  'This session does not run behind the Nexus router. Start Claude Code with claude-nexus (bin/claude-nexus.cmd in the Nexus folder) to switch providers; plain claude keeps Remote Control.'
+  'This is a plain claude session, so it stays on Claude. /provider-nexus <name> copies a command that resumes this conversation under claude-nexus, on that profile.'
+
+/** The hub switched to last, kept across sessions for the one-key toggle. */
+const LAST_HUB_KEY = 'providerLast'
+/** A switch asked for in a plain session, waiting for the same project to start under claude-nexus. */
+const PENDING_ROUTE_KEY = 'providerPending'
+
+/** In a plain session: copy the command that resumes this conversation under claude-nexus, and remember to switch to the profile there. */
+async function restartOn($: Engine, name: string, surface?: Parameters<Engine['ui']['copy']>[0]['surface']): Promise<string> {
+  if (name === 'claude') return 'This plain claude session is already on Claude.'
+  if (!(await loadProfiles($)).some(one => one.name === name)) return `No profile named ${name}. /provider-nexus opens the list.`
+  const cwd = await $.session.root()
+  const command = restartCommand(cwd, await $.session.id(), await isWindows($))
+  const pending: PendingRoute = { name, cwd, at: await $.clock.now() }
+  await $.store.set(PENDING_ROUTE_KEY, pending).catch(() => undefined)
+  const copied = await $.ui.copy({ text: command, ...(surface === undefined ? {} : { surface }) }).catch(() => ({ isCopied: false as const }))
+
+  return copied.isCopied
+    ? `Copied. Type /exit, paste it and press Enter: this conversation goes on under claude-nexus, on ${name}.`
+    : `Type /exit, then run: ${command}  (this conversation goes on under claude-nexus, on ${name})`
+}
+
+/** At start under claude-nexus: the switch a plain session asked for in this folder, if it is still fresh. Taken once. */
+async function takePendingRoute($: Engine): Promise<string | null> {
+  const raw = await $.store.get(PENDING_ROUTE_KEY).catch(() => null)
+  if (raw === null || raw === undefined) return null
+  await $.store.delete(PENDING_ROUTE_KEY).catch(() => undefined)
+
+  return pendingRouteFor(raw, await $.session.root(), await $.clock.now())
+}
 
 /** After a hub compaction, success or not, the next waits this long. */
 const HUB_COMPACT_COOLDOWN_MS = 60_000
@@ -1638,8 +1676,8 @@ const postRoute = ($: Engine, profile: ProviderProfile) =>
   })
 
 /** Points the router at Claude or a profile; the text says what happened. */
-async function useRoute($: Engine, name: string, options: { askCompact?: boolean } = {}): Promise<string> {
-  if ((await ensureRouterLink($)) === null) return NOT_LINKED
+async function useRoute($: Engine, name: string, options: { askCompact?: boolean; surface?: Parameters<Engine['ui']['copy']>[0]['surface'] } = {}): Promise<string> {
+  if ((await ensureRouterLink($)) === null) return restartOn($, name, options.surface)
   if (name === 'claude') {
     const answer = await routerCall($, 'POST', '/__nexus/route', { route: 'claude' })
     if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
@@ -1665,7 +1703,8 @@ async function useRoute($: Engine, name: string, options: { askCompact?: boolean
   const answer = await postRoute($, profile)
   if (!answer.ok) return `The router refused: ${String(answer.data.error ?? answer.status)}`
   const model = primaryModel(profile.models) ?? null
-  await update($, provider, now => ({ ...now, route: profile.name, model }))
+  await update($, provider, now => ({ ...now, route: profile.name, model, lastHub: profile.name }))
+  await $.store.set(LAST_HUB_KEY, profile.name).catch(() => undefined)
 
   return `Now on ${profile.name}${model === null ? '' : ` (${model})`}. Requests go to ${profile.hubUrl}; /provider-nexus use claude goes back.`
 }
@@ -2184,7 +2223,10 @@ export const register: Register = (on, options) => {
     await loadMcpOff($)
     await loadProfiles($)
     if ((await ensureRouterLink($)) !== null) {
-      void providerStatus($).catch(() => undefined)
+      // A plain session in this folder asked to go on here, on a hub: switch now (no compaction ask: nothing has been sent yet).
+      const pending = await takePendingRoute($)
+      if (pending === null) void providerStatus($).catch(() => undefined)
+      else void useRoute($, pending, { askCompact: false }).then(text => $.ui.toast(text, { timeoutMs: 10_000 })).catch(() => undefined)
       void watchRouter($, cfg, true).catch(() => undefined)
     }
     void refreshHud($, true).catch(() => undefined)
@@ -2498,9 +2540,10 @@ export const register: Register = (on, options) => {
           const what = crossed.text
           const current = await read($, turn)
           if (current.isWorking && current.id !== null) {
-            const onClaude = (await read($, routerLink)) !== null && (await read($, provider)).route === 'claude'
+            const isLinked = (await read($, routerLink)) !== null
+            const onClaude = (await read($, provider)).route === 'claude'
             const choice = onClaude ? fallbackChoices(await loadProfiles($))[0]?.name : undefined
-            await askQuotaMidTurn($, what, current.id, choice, crossed.resetsAt)
+            await askQuotaMidTurn($, what, current.id, choice, crossed.resetsAt, isLinked)
           } else {
             quotaPending = what
             $.ui.toast(`Quota: ${what}.`, { timeoutMs: 10_000 })
@@ -2825,6 +2868,8 @@ export const register: Register = (on, options) => {
     const th = themeOf(skin)
     const ic = th.icons
     const tint = (color: string) => paint(color, th)
+    // r: Claude ⇄ hub in a claude-nexus session; in a plain one it copies the restart command.
+    const flipTo = toggleTarget(route.route, route.lastHub, route.profiles)
     const cols = e.props.bodyColumns
     const counts = { working: 0, waiting: 0, done: 0 }
     for (const peer of now.peers) counts[peer.status] += 1
@@ -2922,6 +2967,15 @@ export const register: Register = (on, options) => {
             <Button key="preview" plain hotkey="p" label="Preview" onPress={() => void $.command.run({ command: 'preview-nexus', args: '' })} />
           )}
           {isWide && <Button key="skin" plain hotkey="t" label="Skin" onPress={() => void openPane($, PANE.theme, 'Skin')} />}
+          {flipTo !== null && (
+            <Button
+              key="route"
+              plain
+              hotkey="r"
+              label={flipTo === 'claude' ? '→ Claude' : `→ ${clip(flipTo, 12)}`}
+              onPress={async press => $.ui.toast(await useRoute($, flipTo, { surface: press.surface }), { timeoutMs: 12_000 })}
+            />
+          )}
           {cfg.commitHelper && done.commitReady && now.branch !== null && (
             <Button key="commit" plain hotkey="c" label="Commit" onPress={() => void $.command.run({ command: 'commit-nexus', args: '' })} />
           )}
@@ -3201,7 +3255,7 @@ export const register: Register = (on, options) => {
         <Text bold>
           {view.linked
             ? `Route: ${view.route === 'claude' ? 'Claude (subscription)' : hubBadge(view.route, view.model)}`
-            : 'Not a claude-nexus session: profiles can be added and tested here, switching needs claude-nexus.'}
+            : 'Plain claude session (on Claude). Use copies a command that resumes this conversation under claude-nexus, on that profile.'}
         </Text>
         {view.linked && view.route !== 'claude' && <Button key="claude" plain hotkey="0" label="Use Claude" onPress={async () => $.ui.toast(await useRoute($, 'claude'))} />}
         {view.profiles.length === 0 && <Text dimColor>No profiles yet.</Text>}
@@ -3213,7 +3267,13 @@ export const register: Register = (on, options) => {
               {one.fallback ? (one.isDefault ? ' · fallback (default)' : ' · fallback') : ''}
             </Text>
             <Box flexDirection="row" columnGap={2}>
-              {view.linked && <Button key={`use-${one.name}`} plain {...(index < 9 ? { hotkey: String(index + 1) } : {})} label="Use" onPress={async () => $.ui.toast(await useRoute($, one.name))} />}
+              <Button
+                key={`use-${one.name}`}
+                plain
+                {...(index < 9 ? { hotkey: String(index + 1) } : {})}
+                label="Use"
+                onPress={async press => $.ui.toast(await useRoute($, one.name, { surface: press.surface }), { timeoutMs: 12_000 })}
+              />
               <Button key={`test-${one.name}`} plain label="Test" onPress={async () => void (await testProfile($, one.name))} />
               <Button key={`edit-${one.name}`} plain label="Edit" onPress={() => void startDraft($, one.name)} />
               <Button

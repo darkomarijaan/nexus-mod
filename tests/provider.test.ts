@@ -10,9 +10,13 @@ import {
   needsCompaction,
   nextStep,
   parseProviderArgs,
+  pendingRouteFor,
+  PENDING_ROUTE_MS,
   primaryModel,
   readProfiles,
+  restartCommand,
   routerLinkFrom,
+  toggleTarget,
   validateProfile,
   type ProviderProfile,
 } from '../hooks/provider'
@@ -100,7 +104,37 @@ describe('router link and commands', () => {
     expect(parseProviderArgs('test myhub')).toEqual({ verb: 'test', name: 'myhub' })
     expect(parseProviderArgs('test').verb).toBe('error')
     expect(parseProviderArgs('use')).toEqual({ verb: 'error', message: 'Name a profile: /provider-nexus use <name> (or claude).' })
-    expect(parseProviderArgs('nope').verb).toBe('error')
+    expect(parseProviderArgs('Myhub')).toEqual({ verb: 'use', name: 'myhub' })
+    expect(parseProviderArgs('claude')).toEqual({ verb: 'use', name: 'claude' })
+    expect(parseProviderArgs('myhub extra').verb).toBe('error')
+  })
+
+  test('the restart command resumes this session under the launcher from its folder', () => {
+    expect(restartCommand('C:/app', 'abc-123', true)).toBe('cd "C:/app"; claude-nexus --resume abc-123')
+    expect(restartCommand('/home/me/app', 'abc-123', false)).toBe('cd "/home/me/app" && claude-nexus --resume abc-123')
+  })
+
+  test('a pending switch counts only in the same folder and while fresh', () => {
+    const at = 1_000_000
+    const pending = { name: 'myhub', cwd: 'C:\\App\\', at }
+    expect(pendingRouteFor(pending, 'c:/app', at + 60_000)).toBe('myhub')
+    expect(pendingRouteFor(pending, 'C:/other', at + 60_000)).toBeNull()
+    expect(pendingRouteFor(pending, 'C:/app', at + PENDING_ROUTE_MS + 1)).toBeNull()
+    expect(pendingRouteFor(pending, 'C:/app', at - 1)).toBeNull()
+    expect(pendingRouteFor({ name: 1, cwd: 'C:/app', at }, 'C:/app', at)).toBeNull()
+    expect(pendingRouteFor(null, 'C:/app', at)).toBeNull()
+  })
+
+  test('the one key goes back to Claude from a hub, else to the last hub, the default, a fallback or the first', () => {
+    const plain = { name: 'plain', fallback: false, isDefault: false }
+    const spare = { name: 'spare', fallback: true, isDefault: false }
+    const main = { name: 'main', fallback: true, isDefault: true }
+    expect(toggleTarget('main', null, [main])).toBe('claude')
+    expect(toggleTarget('claude', 'spare', [main, spare])).toBe('spare')
+    expect(toggleTarget('claude', 'gone', [plain, spare, main])).toBe('main')
+    expect(toggleTarget('claude', null, [plain, spare])).toBe('spare')
+    expect(toggleTarget('claude', null, [plain])).toBe('plain')
+    expect(toggleTarget('claude', null, [])).toBeNull()
   })
 
   test('fallback choices put the default first', () => {
@@ -350,16 +384,119 @@ describe('switching with a full context', () => {
   })
 })
 
+/** A store that answers from `entries` and keeps what the plugin writes, readable by the test: undefined once deleted. */
+function storeLog(on: On, entries: Record<string, unknown>) {
+  const now: Record<string, unknown> = { ...entries }
+  on('store.get', (_, e) => ({ value: now[e.key] }) as never)
+  on('store.set', (_, e) => {
+    now[e.key] = e.value
+    return { value: undefined } as never
+  })
+  on('store.delete', (_, e) => {
+    delete now[e.key]
+    return { value: undefined } as never
+  })
+
+  return now
+}
+
 describe('provider in a plain claude session', () => {
-  test('without the launcher the command explains how to start one', { options: BASE_OPTIONS }, async ($, on) => {
-    mock.store(on)
+  function plainEnv(on: On) {
+    const stored = storeLog(on, { providers: [MYHUB] })
+    on('env.get', () => ({ value: undefined }))
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('command.register', (_, e) => ({ value: { command: e.name } }))
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    const copied: string[] = []
+    on('ui.copy', (_, e) => {
+      copied.push(e.text)
+      return { value: { isCopied: true } }
+    })
+    const clock = mock.clock(on)
+
+    return { copied, clock, stored }
+  }
+
+  test('a switch copies the command that resumes this conversation under claude-nexus, and remembers the profile', { options: BASE_OPTIONS }, async ($, on) => {
+    const { copied, stored } = plainEnv(on)
+    await $.session.start?.(START as never)
+    const text = (await $.command.run({ command: 'provider-nexus', args: 'myhub' } as never)).text ?? ''
+    expect(text).toContain('Copied')
+    expect(copied).toEqual(['cd "C:/app"; claude-nexus --resume sess-1'])
+    expect(stored.providerPending).toMatchObject({ name: 'myhub', cwd: 'C:/app' })
+    expect(JSON.stringify(stored.providerPending)).not.toContain(MYHUB.apiKey)
+  })
+
+  test('an unknown profile or claude copies nothing', { options: BASE_OPTIONS }, async ($, on) => {
+    const { copied, stored } = plainEnv(on)
+    await $.session.start?.(START as never)
+    expect((await $.command.run({ command: 'provider-nexus', args: 'nope' } as never)).text).toContain('No profile named nope')
+    expect((await $.command.run({ command: 'provider-nexus', args: 'claude' } as never)).text).toContain('already on Claude')
+    expect(copied).toEqual([])
+    expect(stored.providerPending).toBeUndefined()
+  })
+})
+
+describe('the one-key switch on the band', () => {
+  const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+
+  test('r names the hub on Claude and copies the restart command in a plain session', { options: BASE_OPTIONS }, async ($, on) => {
+    storeLog(on, { providers: [MYHUB] })
+    on('env.get', () => ({ value: undefined }))
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('command.register', (_, e) => ({ value: { command: e.name } }))
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    const copied: string[] = []
+    on('ui.copy', (_, e) => {
+      copied.push(e.text)
+      return { value: { isCopied: true } }
+    })
+    mock.clock(on)
+    await $.session.start?.(START as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    const key = await ui.find({ key: 'route' })
+    expect(key).toBeDefined()
+    expect(JSON.stringify(key)).toContain('myhub')
+    await ui.press({ key: 'route' })
+    expect(copied).toEqual(['cd "C:/app"; claude-nexus --resume sess-1'])
+    await ui.unmount()
+  })
+
+  test('no profiles: no r key', { options: BASE_OPTIONS }, async ($, on) => {
+    storeLog(on, {})
     on('env.get', () => ({ value: undefined }))
     on('session.root', () => ({ value: 'C:/app' }))
     on('command.register', (_, e) => ({ value: { command: e.name } }))
     on('session.start', (_, e) => ({ cwd: e.cwd }))
     mock.clock(on)
     await $.session.start?.(START as never)
-    expect((await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)).text).toContain('claude-nexus')
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    expect(await ui.find({ key: 'route' })).toBeUndefined()
+    await ui.unmount()
+  })
+})
+
+describe('a pending switch at a claude-nexus start', () => {
+  test('a fresh switch from this folder is carried out once, then forgotten', { options: BASE_OPTIONS }, async ($, on) => {
+    const stored = storeLog(on, { providers: [MYHUB], providerPending: { name: 'myhub', cwd: 'C:/app', at: 0 } })
+    const { calls, clock } = routerEnv(on)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    const route = calls.find(one => one.url.endsWith('/__nexus/route'))
+    expect((route?.body as { route?: string } | undefined)?.route).toBe('myhub')
+    expect(stored.providerPending).toBeUndefined()
+    expect(stored.providerLast).toBe('myhub')
+  })
+
+  test('a stale switch is dropped without switching', { options: BASE_OPTIONS }, async ($, on) => {
+    const stored = storeLog(on, { providers: [MYHUB], providerPending: { name: 'myhub', cwd: 'C:/app', at: -PENDING_ROUTE_MS - 1 } })
+    const { calls, clock } = routerEnv(on)
+    await $.session.start?.(START as never)
+    await clock.settle()
+    expect(calls.some(one => one.url.endsWith('/__nexus/route'))).toBe(false)
+    expect(stored.providerPending).toBeUndefined()
   })
 })
 

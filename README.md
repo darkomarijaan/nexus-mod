@@ -1,6 +1,6 @@
 # Nexus: a Claude Code mod
 
-Version 0.5.0.
+Version 0.5.1.
 
 An all-in-one workspace suite for Claude Code:
 
@@ -79,7 +79,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `/context-nexus` | Where the context goes before you type, and what could go |
 | `/mcp-nexus` | MCP servers in this project; `/mcp-nexus off <server>`, `/mcp-nexus on <server>` |
 | `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
-| `/provider-nexus` | Provider profiles: add, edit, test, use. Also `/provider-nexus use <name\|claude>`, `/provider-nexus status`, `/provider-nexus test <name>` |
+| `/provider-nexus` | Provider profiles: add, edit, test, use. Also `/provider-nexus <name\|claude>` (switch), `/provider-nexus status`, `/provider-nexus test <name>` |
 
 **Keys:** press `ctrl+x tab` to focus the bar above the prompt, then one letter:
 
@@ -93,6 +93,7 @@ claude --plugin-dir C:\path\to\nexus-mod
 | `p` | Preview |
 | `t` | Skin (on a wide terminal) |
 | `c` | Commit (shown after a turn that changed files, in a git repo) |
+| `r` | Claude ⇄ hub: to the hub used last (else the default fallback) and back; in a plain `claude` session it copies the restart command (shown once a provider profile exists) |
 
 So `ctrl+x tab s` opens Sessions, `ctrl+x tab i` the idea pad, `ctrl+x tab z` rolls back. Press `ctrl+x`, let go, then `tab`: `ctrl+x` alone shows nothing. In VS Code's terminal, turn on `terminal.integrated.sendKeybindingsToShell` if `ctrl+x tab` does not reach Claude Code. Every key also has a command (`/enhance-nexus`, `/sessions-nexus`, `/idea-nexus`, `/rollback-nexus`, `/preview-nexus`, `/skin-nexus`, `/commit-nexus`). A mod cannot take a bare `ctrl+z` or a `ctrl+x s` chord in this Claude Code build, so the keys go through the bar.
 
@@ -100,9 +101,12 @@ The quotas show on a Claude subscription once the first reply of the session arr
 
 ## Provider router
 
-1. Start Claude Code through the launcher, from the Nexus folder: `C:\path\to\nexus-mod\bin\claude-nexus.cmd` (Windows) or `/path/to/nexus-mod/bin/claude-nexus` (macOS, Linux). Any `claude` arguments pass through, e.g. `claude-nexus --resume <id>`. Put that `bin` folder on your PATH to type just `claude-nexus`.
-2. `/provider-nexus` → **Add profile**: name, hub URL (the base that ends in `/v1`, e.g. `https://hub.example.com/v1`), API key, then pick the models from the hub's list, the context window and whether to offer it when Claude's quota runs out. **Test** sends one short request per model.
-3. **Use** (or `/provider-nexus use myhub`) switches at the next request; `/provider-nexus use claude` goes back. The HUD shows `⇄ <profile> · <model>` while a hub is in use.
+Switching providers needs Claude Code started through the launcher, `claude-nexus`, which puts a small router in front of it. On the Claude route it behaves like plain `claude`, so you can use it as your everyday command; the one thing it gives up is Remote Control, which refuses any custom API address. Stay on plain `claude` when you want Remote Control.
+
+1. Once: put Nexus's `bin` folder on your PATH (Windows: add `C:\path\to\nexus-mod\bin` to the user `Path`; macOS, Linux: add `/path/to/nexus-mod/bin`), then open a new terminal. `claude-nexus` takes every `claude` argument (`claude-nexus --resume <id>`, `claude-nexus -c`).
+2. Once: `/provider-nexus` → **Add profile**: name, hub URL (the base that ends in `/v1`, e.g. `https://hub.example.com/v1`), API key, then pick the models from the hub's list, the context window and whether to offer it when Claude's quota runs out. **Test** sends one short request per model. Profiles are kept for every session.
+3. Switch: `ctrl+x tab r`, **Use** in the pane, or `/provider-nexus myhub`. In a `claude-nexus` session it takes effect at the next request, and `r` again (or `/provider-nexus claude`) goes back. The HUD shows `⇄ <profile> · <model>` while a hub is in use.
+4. From a plain `claude` session the same switch copies `cd "<project>"; claude-nexus --resume <this session>`: type `/exit`, paste, Enter. The conversation goes on under `claude-nexus`, already on that profile (the switch waits up to 15 minutes). When Claude's quota runs out mid-turn, the quota question offers the same.
 
 The hub must speak the Anthropic Messages API (`POST <hub URL>/messages`), as OmniRoute, LiteLLM and claude-code-router do. Your claude.ai login stays the credential on the Claude route; the hub key is added by the router only on hub requests, and the login never reaches the hub. Profiles, keys included, live in Nexus's local store. Set `NEXUS_ROUTER_DEBUG=1` before `claude-nexus` to log each request's route and status to `~/.claude/nexus/router-<pid>.log`.
 
@@ -156,7 +160,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 
 ## Roadmap
 
-- **v0.5** (this version): provider router.
+- **v0.5** (this version): provider router; v0.5.1: one-key switch, switching from a plain session by resuming it under claude-nexus.
 - **v0.6**: test-tamper guard, evidence check before "done", `/review-nexus`.
 - **v0.7**: hunk-level diff review, plan annotation in the browser.
 - Later: Telegram remote control, session search, worktree cockpit.

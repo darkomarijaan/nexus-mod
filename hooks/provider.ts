@@ -152,6 +152,39 @@ export function parseProviderArgs(
   if (verb === 'use') return name === '' ? { verb: 'error', message: 'Name a profile: /provider-nexus use <name> (or claude).' } : { verb: 'use', name }
 
   if (verb === 'test') return name === '' ? { verb: 'error', message: 'Name a profile: /provider-nexus test <name>.' } : { verb: 'test', name }
+  // `/provider-nexus myhub` is `use myhub`.
+  if (name === '') return { verb: 'use', name: verb }
 
-  return { verb: 'error', message: 'Use /provider-nexus, /provider-nexus status, /provider-nexus use <name|claude> or /provider-nexus test <name>.' }
+  return { verb: 'error', message: 'Use /provider-nexus, /provider-nexus <name|claude>, /provider-nexus status or /provider-nexus test <name>.' }
+}
+
+/** What resumes this conversation under the launcher, from the project folder. `;` on Windows: PowerShell 5.1 has no `&&`. */
+export function restartCommand(cwd: string, sessionId: string, isWindows: boolean): string {
+  return `cd "${cwd}"${isWindows ? ';' : ' &&'} claude-nexus --resume ${sessionId}`
+}
+
+/** A switch asked for in a plain session, carried out once the same project starts again under claude-nexus. */
+export type PendingRoute = { name: string; cwd: string; at: number }
+
+/** How long a copied restart command stays good for. */
+export const PENDING_ROUTE_MS = 15 * 60_000
+
+const sameFolder = (a: string, b: string) => a.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === b.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+
+/** The profile to switch to at start, or null: anything malformed, stale or from another folder is ignored. */
+export function pendingRouteFor(raw: unknown, cwd: string, now: number): string | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const { name, cwd: from, at } = raw as Record<string, unknown>
+  if (typeof name !== 'string' || name === '' || typeof from !== 'string' || typeof at !== 'number') return null
+  if (now - at < 0 || now - at > PENDING_ROUTE_MS || !sameFolder(from, cwd)) return null
+
+  return name
+}
+
+/** One key flips between Claude and a hub: on a hub, back to Claude; on Claude, the hub used last, else the default fallback, else the first fallback, else the first profile. */
+export function toggleTarget(route: string, lastHub: string | null, profiles: { name: string; fallback: boolean; isDefault: boolean }[]): string | null {
+  if (route !== 'claude') return 'claude'
+  if (lastHub !== null && profiles.some(one => one.name === lastHub)) return lastHub
+
+  return (profiles.find(one => one.isDefault) ?? profiles.find(one => one.fallback) ?? profiles[0])?.name ?? null
 }

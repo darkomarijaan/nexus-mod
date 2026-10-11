@@ -31,7 +31,7 @@ export const IDLE_TURN: NexusTurn = {
 
 export const EMPTY_WORK: NexusWork = { files: [], turns: 0, lastPrompt: '', commitReady: false, agentStarts: {} }
 
-export const IDLE_PROVIDER: NexusProviderView = { linked: false, route: 'claude', model: null, profiles: [], tests: {}, draft: null }
+export const IDLE_PROVIDER: NexusProviderView = { linked: false, route: 'claude', model: null, lastHub: null, profiles: [], tests: {}, draft: null }
 
 export const IDLE_VERIFY: NexusVerify = { phase: 'idle', checks: [], at: 0 }
 

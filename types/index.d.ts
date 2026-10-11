@@ -117,6 +117,8 @@ export type NexusProviderView = {
   linked: boolean
   route: string
   model: string | null
+  /** The hub this person switched to last (kept across sessions); null: none yet. */
+  lastHub: string | null
   profiles: NexusProviderSummary[]
   tests: Record<string, string>
   draft: NexusProviderDraft | null
