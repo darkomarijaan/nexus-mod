@@ -27,6 +27,7 @@ export type NexusConfig = {
   handoff: boolean
   loopGuard: boolean
   maxAgents: number
+  agentSteps: boolean
   suggestNext: boolean
   commitHelper: boolean
   theme: string
@@ -77,6 +78,7 @@ export function readConfig(options: PluginOptions): NexusConfig {
     handoff: flag(options.handoff, true),
     loopGuard: flag(options.loopGuard, true),
     maxAgents: Math.floor(count(options.maxAgents, 0)),
+    agentSteps: flag(options.agentSteps, true),
     suggestNext: flag(options.suggestNext, true),
     commitHelper: flag(options.commitHelper, true),
     theme: isTheme(theme) ? theme : DEFAULT_THEME,

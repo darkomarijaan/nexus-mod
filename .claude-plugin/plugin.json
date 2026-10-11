@@ -140,6 +140,12 @@
       "description": "Refuse new subagents past this many running at once. 0: no limit.",
       "default": 0
     },
+    "agentSteps": {
+      "type": "boolean",
+      "title": "Agent step reports",
+      "description": "Give subagents a step tool to report their progress (step 3/5 writing tests) to the Agents panel. Off: the panel shows what it observes only.",
+      "default": true
+    },
     "suggestNext": {
       "type": "boolean",
       "title": "Next-step suggestion",

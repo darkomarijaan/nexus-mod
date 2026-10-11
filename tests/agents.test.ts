@@ -261,3 +261,59 @@ describe('/agents-nexus', () => {
     expect(answer.result).toEqual({ matches: 3 })
   })
 })
+
+/** The engine calls a session start makes, so `session.start` runs whole. */
+function startable(on: On): string[] {
+  const registered: string[] = []
+  mock.store(on)
+  on('session.root', () => ({ value: 'C:/app' }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('tool.register', (_, e) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__nexus__${e.name}` } } as never
+  })
+  on('env.get', () => ({ value: undefined }))
+  on('fs.exists', () => ({ value: false }))
+  on('fs.list', () => ({ value: [] }) as never)
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [] } }) as never)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  return registered
+}
+
+const START = { cwd: 'C:/app', surface: 'terminal', isInteractive: true } as never
+
+describe('step reports', () => {
+  test('a subagent reports its steps; the panel shows them', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    await spawnOne($ as never)
+    const answer = await $.tool.call({ tool: 'mcp__nexus__step', done: 3, total: 5, note: 'writing tests', agentId: 'a1' } as never)
+    expect(answer.result).toBe('ok')
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    expect(await drawnText(ui)).toContain('step 3/5 writing tests')
+    await ui.unmount()
+  })
+
+  test('the main thread is told steps are for subagents', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    const answer = await $.tool.call({ tool: 'mcp__nexus__step', done: 1 } as never)
+    expect(answer.result).toBe('ignored: only subagents report steps')
+  })
+
+  test('on by default, the step tool is registered at session start', { options: QUIET }, async ($, on) => {
+    const registered = startable(on)
+    await $.session.start?.(START)
+    expect(registered).toContain('step')
+  })
+
+  test('agentSteps off: no step tool', { options: { ...QUIET, agentSteps: false } }, async ($, on) => {
+    const registered = startable(on)
+    await $.session.start?.(START)
+    expect(registered).not.toContain('step')
+  })
+})

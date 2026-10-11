@@ -92,10 +92,13 @@ import {
   isQuiet,
   onComplete,
   onSpawn,
+  onStep,
   onToolCall,
   onUsage,
   reconcile,
   shortModel,
+  STEP_DESCRIPTION,
+  STEP_SCHEMA,
   STEP_TOOL,
   stepText,
 } from './agents'
@@ -2350,6 +2353,7 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
     `  Subagent cap        ${cfg.maxAgents === 0 ? 'none' : cfg.maxAgents}`,
+    `  Agents panel        /agents-nexus  step reports ${on(cfg.agentSteps)}`,
     `  Next-step suggest   ${on(cfg.suggestNext)}`,
     `  Commit helper       ${on(cfg.commitHelper)}  /commit-nexus`,
     `  Skin                ${theme}  /skin-nexus [name | list | reset]${cfg.syncClaudeTheme ? "  (Claude Code's theme follows)" : ''}`,
@@ -2403,6 +2407,10 @@ export const register: Register = (on, options) => {
         isDeferred: false,
       })
       void runBridge($)
+    }
+    // A step tool that will not register leaves the panel to what it observes; the session starts all the same.
+    if (cfg.agentSteps) {
+      await $.tool.register({ name: 'step', description: STEP_DESCRIPTION, inputSchema: STEP_SCHEMA, isDeferred: false }).catch(() => undefined)
     }
     const picked = (await storedTheme($)) ?? cfg.theme
     await update($, themeName, () => picked)
@@ -2567,6 +2575,27 @@ export const register: Register = (on, options) => {
     }
   })
 
+  // A subagent's own report of its steps; the main thread has none to make.
+  on('tool.call', { tool: STEP_TOOL }, async ($, e) => {
+    const agentId = e.agentId
+    if (agentId === undefined) return { result: 'ignored: only subagents report steps' }
+    const input = e as unknown as { done?: unknown; total?: unknown; note?: unknown }
+    await trackAgents($, (runs, now) =>
+      onStep(
+        runs,
+        {
+          agentId,
+          done: Number(input.done ?? 0) || 0,
+          ...(input.total === undefined ? {} : { total: Number(input.total) || 1 }),
+          ...(typeof input.note === 'string' ? { note: input.note } : {}),
+        },
+        now,
+      ),
+    )
+
+    return { result: 'ok' }
+  })
+
   // ── Guards on every other tool call: shield, review, checkpoint, progress, loops ─
   let loop: LoopState = NO_LOOP
   let checkpointKey: string | null = null
@@ -2580,7 +2609,7 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
-    if (tool === DESIGN_TOOL || tool === 'AskUserQuestion') return next(e)
+    if (tool === DESIGN_TOOL || tool === STEP_TOOL || tool === 'AskUserQuestion') return next(e)
     const isMain = e.agentId === undefined
     const command = SHELL_TOOLS.has(tool) ? field(e, 'command') : undefined
     const server = mcpServerOf(tool)
