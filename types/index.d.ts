@@ -164,6 +164,8 @@ export type NexusAgentRun = {
   /** Every request's, summed. */
   tokens: number
   step: { done: number; total: number; note: string | null } | null
+  /** Tool calls started and not yet answered. */
+  inTool: number
 }
 
 declare module 'claude-code' {

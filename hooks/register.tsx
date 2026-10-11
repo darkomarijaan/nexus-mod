@@ -94,6 +94,7 @@ import {
   onSpawn,
   onStep,
   onToolCall,
+  onToolEnd,
   onUsage,
   reconcile,
   shortModel,
@@ -408,7 +409,8 @@ async function refreshHud($: Engine, isForced = false): Promise<void> {
     $.session.model(),
     $.session.usage(),
     readPeers($),
-    $.agent.list().catch(() => []),
+    // null: the engine did not answer, which is not the same as no agents.
+    $.agent.list().catch(() => null),
     read($, hud),
   ])
   let branch = before.branch
@@ -420,6 +422,9 @@ async function refreshHud($: Engine, isForced = false): Promise<void> {
     if (reading !== undefined) {
       branch = reading.branch
       workTree = reading.git
+    } else if (branch === null) {
+      // A status too slow for the timeout (a large repository) still names the branch.
+      branch = await currentBranch($)
     }
   }
   const next: NexusHud = {
@@ -431,19 +436,21 @@ async function refreshHud($: Engine, isForced = false): Promise<void> {
     percent: usage.context.percent ?? null,
     limits: readLimits(usage.rateLimits ?? []),
     peers,
-    agents: agents
+    agents: (agents ?? [])
       .filter(agent => agent.status !== 'completed' && agent.status !== 'killed')
       .map(agent => ({ id: agent.id, description: agent.description, type: agent.type, status: agent.status })),
     at: now,
   }
   await update($, hud, () => next)
-  await trackAgents($, (runs, at) =>
-    reconcile(
-      runs,
-      agents.map(agent => ({ id: agent.id, type: agent.type, description: agent.description, status: agent.status })),
-      at,
-    ),
-  )
+  if (agents !== null) {
+    await trackAgents($, (runs, at) =>
+      reconcile(
+        runs,
+        agents.map(agent => ({ id: agent.id, type: agent.type, description: agent.description, status: agent.status })),
+        at,
+      ),
+    )
+  }
 }
 
 /** Records a subagent event for the Agents panel; a failure here never reaches the call it watched. */
@@ -2691,13 +2698,13 @@ export const register: Register = (on, options) => {
         file !== undefined && FILE_TOOLS.has(tool) && !now.changed.includes(file) ? [...now.changed, file] : now.changed,
       hasMutated: now.hasMutated || isMutating,
     }))
+    // 4a. A subagent's tool, for the Agents panel: shown while it runs, and its end is activity too
+    const agentId = e.agentId
+    if (agentId !== undefined) {
+      await trackAgents($, (runs, now) => onToolCall(runs, { agentId, tool, detail: clip(describeInput(e), 80) }, now))
+    }
     try {
       const answer = await next(e)
-      // 4a. A subagent's last tool, for the Agents panel
-      const agentId = e.agentId
-      if (agentId !== undefined) {
-        await trackAgents($, (runs, now) => onToolCall(runs, { agentId, tool, detail: describeInput(e) }, now))
-      }
       // 4b. Long, routine shell output folded before Claude reads it
       const result = cfg.trimOutput && command !== undefined ? await trimShellResult($, command, answer).catch(() => answer) : answer
       if (!cfg.loopGuard || !isMain) return result
@@ -2715,6 +2722,7 @@ export const register: Register = (on, options) => {
       return { ...result, context: [...(result.context ?? []), note] }
     } finally {
       await update($, turn, now => (now.tool === tool ? { ...now, tool: null, detail: null } : now))
+      if (agentId !== undefined) await trackAgents($, (runs, now) => onToolEnd(runs, { agentId }, now))
     }
   }).catch(($, e, next) => {
     if (next.called) return next(e)

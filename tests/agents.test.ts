@@ -13,6 +13,7 @@ import {
   onSpawn,
   onStep,
   onToolCall,
+  onToolEnd,
   onUsage,
   reconcile,
   shortModel,
@@ -44,6 +45,7 @@ describe('agent events', () => {
         contextTokens: 0,
         tokens: 0,
         step: null,
+        inTool: 0,
       },
     ])
   })
@@ -381,5 +383,82 @@ describe('Agents panel: pick, message, open from the HUD', () => {
     const after = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
     expect(((await after.find({ key: 'agents' })) as { props?: { hotkey?: string } } | undefined)?.props?.hotkey).toBe('a')
     await after.unmount()
+  })
+})
+
+describe('review fixes', () => {
+  test('past 50, reconcile never brings dropped agents back as blanks', () => {
+    let runs: AgentRun[] = []
+    const list: { id: string; type: string; description: string; status: string }[] = []
+    for (let i = 0; i < 55; i++) {
+      runs = onComplete(onSpawn(runs, { agentId: `d${i}`, type: 'Explore', description: `job ${i}`, model: 'claude-haiku-5-5' }, T0 + i), { agentId: `d${i}`, isOk: true }, T0 + i)
+      runs = onToolEnd(onToolCall(runs, { agentId: `d${i}`, tool: 'Read', detail: 'a.ts' }, T0 + i), { agentId: `d${i}` }, T0 + i)
+      runs = onComplete(runs, { agentId: `d${i}`, isOk: true }, T0 + i)
+      list.push({ id: `d${i}`, type: 'Explore', description: `job ${i}`, status: 'completed' })
+    }
+    const before = runs.map(run => run.id)
+    let after = runs
+    for (let tick = 1; tick <= 10; tick++) after = reconcile(after, list, T0 + 60_000 * tick)
+    expect(after.map(run => run.id)).toEqual(before)
+    expect(after.every(run => run.tools > 0)).toBe(true)
+  })
+
+  test('a finished agent that works again is running again', () => {
+    const done = onComplete(spawned(), { agentId: 'a1', isOk: true }, T0 + 1000)
+    expect(onToolCall(done, { agentId: 'a1', tool: 'Read', detail: 'b.ts' }, T0 + 5000)[0]).toMatchObject({ status: 'running', endedAt: null })
+    expect(onUsage(done, { agentId: 'a1', model: 'claude-haiku-5-5', usage: USAGE }, T0 + 5000)[0]).toMatchObject({ status: 'running', endedAt: null })
+    expect(onStep(done, { agentId: 'a1', done: 1, total: 2 }, T0 + 5000)[0]).toMatchObject({ status: 'running', endedAt: null })
+    expect(reconcile(done, [{ id: 'a1', type: 'Explore', description: '', status: 'running' }], T0 + 5000)[0]).toMatchObject({ status: 'running', endedAt: null })
+  })
+
+  test('an agent inside a long tool is never quiet; the end of the tool is activity', () => {
+    const inside = onToolCall(spawned(), { agentId: 'a1', tool: 'Bash', detail: 'npm test' }, T0)
+    expect(isQuiet(inside[0] as AgentRun, T0 + 10 * 60_000)).toBe(false)
+    const out = onToolEnd(inside, { agentId: 'a1' }, T0 + 180_000)
+    expect(out[0]).toMatchObject({ inTool: 0, lastActivityAt: T0 + 180_000, tools: 1 })
+    expect(isQuiet(out[0] as AgentRun, T0 + 180_000 + 120_001)).toBe(true)
+  })
+})
+
+describe('review fixes in the session', () => {
+  test('a tool still running shows as the last activity, a multi-line command on one line', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    let release: () => void = () => undefined
+    on('tool.call', { tool: 'Bash' }, () => new Promise(resolve => (release = () => resolve({ result: { stdout: '', stderr: '', interrupted: false } }))) as never)
+    await spawnOne($ as never)
+    const call = $.tool.call({ tool: 'Bash', command: 'git commit -m "first line\nsecond line"', agentId: 'a1' } as never)
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    let text = ''
+    for (let i = 0; i < 20 && !text.includes('Bash  git commit'); i++) text = await drawnText(ui)
+    expect(text).toContain('Bash  git commit -m "first line second line"')
+    release()
+    await call
+    await ui.unmount()
+  })
+
+  test('a failed engine list leaves running agents running', { options: QUIET }, async ($, on) => {
+    const clock = mock.clock(on)
+    engine(on)
+    mock.store(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('fs.list', () => ({ value: [] }) as never)
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('session.model', () => ({ value: 'claude-opus-5-5' }))
+    on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [] } }) as never)
+    on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+    on('agent.list', () => {
+      throw new Error('host busy')
+    })
+    await spawnOne($ as never)
+    await clock.advance(60_000)
+    await $.command.run({ command: 'sessions-nexus', args: '' } as never)
+    await clock.settle()
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    expect(await drawnText(ui)).toContain('1 running')
+    await ui.unmount()
   })
 })

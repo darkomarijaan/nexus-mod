@@ -153,3 +153,35 @@ describe('HUD git marks', () => {
     await ui.unmount()
   })
 })
+
+describe('HUD branch on a slow repository', () => {
+  const BAND = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+
+  test('a git status that times out still shows the branch', { options: QUIET }, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('command.register', (_, e) => ({ value: { command: e.name } }))
+    on('env.get', () => ({ value: undefined }))
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }) as never)
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('session.model', () => ({ value: 'claude-opus-5-5' }))
+    on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [] } }) as never)
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('process.run', (_, e) => {
+      if (e.argv.includes('status')) throw new Error('timed out after 4000 ms')
+      const stdout = e.argv.includes('--abbrev-ref') ? 'big-monorepo-branch\n' : ''
+      return { value: { exitCode: 0, stdout, stderr: '' } } as never
+    })
+    await $.session.start?.({ cwd: 'C:/app', surface: 'terminal', isInteractive: true } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    let branch
+    for (let i = 0; i < 20 && branch === undefined; i++) {
+      await clock.settle()
+      branch = await ui.find({ type: 'Text', text: /big-monorepo-branch/ })
+    }
+    expect(branch).toBeDefined()
+    await ui.unmount()
+  })
+})

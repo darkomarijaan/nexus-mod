@@ -50,7 +50,13 @@ function blank(id: string, now: number): AgentRun {
     contextTokens: 0,
     tokens: 0,
     step: null,
+    inTool: 0,
   }
+}
+
+/** A finished agent that works again (resumed by a message, a teammate's next turn) is running again. */
+function live(run: AgentRun): AgentRun {
+  return run.status === 'running' ? run : { ...run, status: 'running', endedAt: null }
 }
 
 /** At most MAX_RUNS: the oldest finished records go first; a running one never does. */
@@ -87,12 +93,18 @@ export function onSpawn(runs: readonly AgentRun[], spawn: { agentId: string; typ
 
 export function onToolCall(runs: readonly AgentRun[], call: { agentId: string; tool: string; detail: string }, now: number): AgentRun[] {
   return withRun(runs, call.agentId, now, run => ({
-    ...run,
+    ...live(run),
     tools: run.tools + 1,
+    inTool: run.inTool + 1,
     lastTool: call.tool,
     lastDetail: call.detail === '' ? null : call.detail,
     lastActivityAt: now,
   }))
+}
+
+/** A tool call answered: no longer inside it, and that is activity too. */
+export function onToolEnd(runs: readonly AgentRun[], end: { agentId: string }, now: number): AgentRun[] {
+  return withRun(runs, end.agentId, now, run => ({ ...run, inTool: Math.max(0, run.inTool - 1), lastActivityAt: now }))
 }
 
 export function onUsage(runs: readonly AgentRun[], step: { agentId: string; model: string; usage: Usage }, now: number): AgentRun[] {
@@ -100,7 +112,7 @@ export function onUsage(runs: readonly AgentRun[], step: { agentId: string; mode
   const used = usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
 
   return withRun(runs, step.agentId, now, run => ({
-    ...run,
+    ...live(run),
     model: step.model || run.model,
     contextTokens: used,
     tokens: run.tokens + used,
@@ -117,7 +129,7 @@ export function onStep(runs: readonly AgentRun[], report: { agentId: string; don
     const done = Math.min(total, Math.max(0, Math.round(report.done)))
     const note = report.note?.trim() ? clip(report.note, NOTE_MAX) : null
 
-    return { ...run, step: { done, total, note }, lastActivityAt: now }
+    return { ...live(run), step: { done, total, note }, lastActivityAt: now }
   })
 }
 
@@ -140,8 +152,8 @@ export function reconcile(
   now: number,
 ): AgentRun[] {
   let next = runs.map(run => {
-    if (run.status !== 'running') return run
     const listed = list.find(one => one.id === run.id)
+    if (run.status !== 'running') return listed !== undefined && statusOf(listed.status) === 'running' ? live(run) : run
     if (listed === undefined) return now - run.startedAt > GRACE_MS ? { ...run, status: 'ended' as const, endedAt: now } : run
     const status = statusOf(listed.status)
 
@@ -150,6 +162,8 @@ export function reconcile(
   for (const one of list) {
     if (next.some(run => run.id === one.id)) continue
     const status = statusOf(one.status)
+    // A finished agent past the cap was dropped on purpose; adding it back would push out one with real data.
+    if (status !== 'running' && next.length >= MAX_RUNS) continue
     next = [...next, { ...blank(one.id, now), type: one.type || 'agent', description: one.description, status, endedAt: status === 'running' ? null : now }]
   }
 
@@ -157,7 +171,7 @@ export function reconcile(
 }
 
 export function isQuiet(run: AgentRun, now: number): boolean {
-  return run.status === 'running' && now - run.lastActivityAt > QUIET_MS
+  return run.status === 'running' && run.inTool === 0 && now - run.lastActivityAt > QUIET_MS
 }
 
 /** No window size per subagent reaches a mod: a `[1m]` model is 1M, any other 200k. */
@@ -215,3 +229,4 @@ export function agentSummary(runs: readonly AgentRun[]): string {
 
   return ['Agents', ...states, `${tokens(total)} tokens`].join(' · ')
 }
+
