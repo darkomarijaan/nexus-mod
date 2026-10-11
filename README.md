@@ -64,6 +64,24 @@ claude --plugin-dir C:\path\to\nexus-mod
 
 > Keep the folder on an NTFS drive. Claude Code cannot read a plugin folder on an exFAT or FAT32 drive (the install fails with `EISDIR ... readlink`).
 
+**Update** to a newer version:
+
+```
+claude plugin marketplace update nexus-mod
+claude plugin update nexus@nexus-mod
+```
+
+From a local folder, first replace its contents with the new release (`git pull` in a clone, or unzip the new `nexus-mod.zip` over it). Then `/reload-plugins` or start a new session. `claude plugin list` shows the installed version.
+
+**Where the `bin` folder is** (needed once, for the [provider router](#provider-router)):
+
+| Installed from | Nexus's `bin` folder |
+|---|---|
+| GitHub | `%USERPROFILE%\.claude\plugins\marketplaces\nexus-mod\bin` (Windows), `~/.claude/plugins/marketplaces/nexus-mod/bin` (macOS, Linux) |
+| A local folder | `<that folder>\bin`, e.g. `C:\path\to\nexus-mod\bin` |
+
+Use these paths, not the copy under `.claude\plugins\cache\...`: that folder's name carries the version, so it changes with every update.
+
 ## Use
 
 | Command | What it does |
@@ -103,7 +121,11 @@ The quotas show on a Claude subscription once the first reply of the session arr
 
 Switching providers needs Claude Code started through the launcher, `claude-nexus`, which puts a small router in front of it. On the Claude route it behaves like plain `claude`, so you can use it as your everyday command; the one thing it gives up is Remote Control, which refuses any custom API address. Stay on plain `claude` when you want Remote Control.
 
-1. Once: put Nexus's `bin` folder on your PATH (Windows: add `C:\path\to\nexus-mod\bin` to the user `Path`; macOS, Linux: add `/path/to/nexus-mod/bin`), then open a new terminal. `claude-nexus` takes every `claude` argument (`claude-nexus --resume <id>`, `claude-nexus -c`).
+1. Once: put Nexus's `bin` folder ([where it is](#install)) on your PATH, then open a new terminal. Windows (PowerShell), for a GitHub install:
+   ```
+   [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ";$env:USERPROFILE\.claude\plugins\marketplaces\nexus-mod\bin", 'User')
+   ```
+   macOS, Linux: add `export PATH="$HOME/.claude/plugins/marketplaces/nexus-mod/bin:$PATH"` to `~/.zshrc` or `~/.bashrc`. Check with `claude-nexus --version`. `claude-nexus` takes every `claude` argument (`claude-nexus --resume <id>`, `claude-nexus -c`).
 2. Once: `/provider-nexus` → **Add profile**: name, hub URL (the base that ends in `/v1`, e.g. `https://hub.example.com/v1`), API key, then pick the models from the hub's list, the context window and whether to offer it when Claude's quota runs out. **Test** sends one short request per model. Profiles are kept for every session.
 3. Switch: `ctrl+x tab r`, **Use** in the pane, or `/provider-nexus myhub`. In a `claude-nexus` session it takes effect at the next request, and `r` again (or `/provider-nexus claude`) goes back. The HUD shows `⇄ <profile> · <model>` while a hub is in use.
 4. From a plain `claude` session the same switch copies `cd "<project>"; claude-nexus --resume <this session>`: type `/exit`, paste, Enter. The conversation goes on under `claude-nexus`, already on that profile (the switch waits up to 15 minutes). When Claude's quota runs out mid-turn, the quota question offers the same.

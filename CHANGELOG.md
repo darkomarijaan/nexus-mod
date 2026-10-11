@@ -5,7 +5,7 @@
 - **One-key switch:** `ctrl+x tab r` flips between Claude and the hub used last (else the default fallback profile). The last hub is remembered across sessions.
 - **Switching from a plain `claude` session:** `/provider-nexus <name>`, the `r` key and the quota question copy `cd "<project>"; claude-nexus --resume <this session>`. Type `/exit`, paste, Enter: the conversation goes on under `claude-nexus`, already on that profile (when it starts within 15 minutes in the same folder).
 - `/provider-nexus <name|claude>` is short for `/provider-nexus use <name|claude>`.
-- README: when to use `claude-nexus` and when to stay on plain `claude` (Remote Control only works on plain `claude`).
+- README: when to use `claude-nexus` and when to stay on plain `claude` (Remote Control only works on plain `claude`), how to update, and where the `bin` folder is for each install method.
 
 ## 0.5.0 (2026-10-11)
 
