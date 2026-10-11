@@ -6,6 +6,7 @@ import type {
   NexusCheckpoint,
   NexusDesign,
   NexusDesignOption,
+  NexusGit,
   NexusHud,
   NexusPeer,
   NexusPeerStatus,
@@ -81,6 +82,7 @@ import {
   type LeanPick,
   type LeanSettings,
 } from './leanmode'
+import { GIT_STATUS_ARGS, gitMarks, parseGitStatus } from './gitstat'
 import { type McpRow, mcpChangeText, mcpListText, mcpRows, mcpSummary, parseMcpArgs, resolveMcp, rowKey } from './mcp'
 import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, pickerKey, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
@@ -362,7 +364,21 @@ async function readPeers($: Engine): Promise<NexusPeer[]> {
 
 let branchReadAt = 0
 
-/** Refreshes every HUD field; the branch at most every 15 seconds unless forced. */
+/**
+ * The branch and work tree for the HUD from one git status; both null outside
+ * a repository, undefined when git did not answer, so the last reading stays.
+ */
+async function readGit($: Engine): Promise<{ branch: string | null; git: NexusGit | null } | undefined> {
+  try {
+    const run = await $.process.run(['git', ...GIT_STATUS_ARGS], { cwd: await $.session.root(), timeoutMs: 4000 })
+
+    return run.exitCode === 0 ? parseGitStatus(run.stdout) : { branch: null, git: null }
+  } catch {
+    return undefined
+  }
+}
+
+/** Refreshes every HUD field; the branch and work tree at most every 15 seconds unless forced. */
 async function refreshHud($: Engine, isForced = false): Promise<void> {
   const now = await $.clock.now()
   const [model, usage, peers, agents, before] = await Promise.all([
@@ -373,12 +389,19 @@ async function refreshHud($: Engine, isForced = false): Promise<void> {
     read($, hud),
   ])
   let branch = before.branch
+  // Absent in a HUD saved before the work tree was read.
+  let workTree = before.git ?? null
   if (isForced || now - branchReadAt > 15_000) {
     branchReadAt = now
-    branch = await currentBranch($)
+    const reading = await readGit($)
+    if (reading !== undefined) {
+      branch = reading.branch
+      workTree = reading.git
+    }
   }
   const next: NexusHud = {
     branch,
+    git: workTree,
     model,
     tokens: usage.context.tokens ?? null,
     window: usage.context.window,
@@ -2294,7 +2317,8 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     `  Commit helper       ${on(cfg.commitHelper)}  /commit-nexus`,
     `  Skin                ${theme}  /skin-nexus [name | list | reset]${cfg.syncClaudeTheme ? "  (Claude Code's theme follows)" : ''}`,
     '',
-    'HUD: branch, model, sessions (green working, yellow waiting, gray idle), running',
+    'HUD: branch with commits to push and pull (↑ ↓) and files staged, changed, untracked',
+    '  and in conflict (+ ~ ? !); model, sessions (green working, yellow waiting, gray idle), running',
     '  subagents; 5h and weekly usage with resets and a red forecast when the pace runs',
     '  out first; context; cache hits with tok/s and how warm the cache is; a red',
     '  warning when a reply was cut off; the active task with its progress.',
@@ -2776,7 +2800,8 @@ export const register: Register = (on, options) => {
     longTurn.startedAt = null
     const finished = await read($, turn)
     await update($, turn, now => ({ ...now, isWorking: false, isWaiting: false, tool: null, detail: null }))
-    void refreshHud($).catch(() => undefined)
+    // A turn that changed files reads the work tree again at once.
+    void refreshHud($, finished.changed.length > 0 || finished.hasMutated).catch(() => undefined)
     let footerResult: typeof result | null = null
     try {
       const files = await Promise.all(finished.changed.map(path => projectPath($, path)))
@@ -3065,6 +3090,9 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row">
           <Text wrap="truncate-end">
             <Text color={th.accent}>{ic.branch} {now.branch ?? 'no git'}</Text>
+            {gitMarks(now.git ?? null, ic).map(mark => (
+              <Text key={`git-${mark.text}`} color={th[mark.role]}>{` ${mark.text}`}</Text>
+            ))}
             {route.route !== 'claude' ? (
               <Text color={tint('magenta')}> · {hubBadge(route.route, route.model)}</Text>
             ) : (

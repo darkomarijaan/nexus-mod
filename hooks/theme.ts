@@ -17,6 +17,9 @@ export type ThemeIcons = {
   busy: string
   checkpoint: string
   lean: string
+  /** Commits to push, and to pull, beside the branch. */
+  ahead: string
+  behind: string
 }
 
 export type Theme = {
@@ -54,6 +57,8 @@ const UNICODE: ThemeIcons = {
   busy: '⟳',
   checkpoint: '⚑',
   lean: '✂',
+  ahead: '↑',
+  behind: '↓',
 }
 
 const ASCII: ThemeIcons = {
@@ -68,6 +73,8 @@ const ASCII: ThemeIcons = {
   busy: '..',
   checkpoint: '#',
   lean: '[lean]',
+  ahead: '^',
+  behind: 'v',
 }
 
 export const THEMES: readonly Theme[] = [

@@ -65,7 +65,7 @@ describe('themes', () => {
 })
 
 const NEW_SKINS = ['gruvbox', 'mocha', 'tokyo', 'rosepine', 'monokai', 'latte', 'contrast', 'phosphor']
-const ICON_KEYS = ['branch', 'model', 'dot', 'agent', 'warn', 'speed', 'ok', 'fail', 'busy', 'checkpoint', 'lean']
+const ICON_KEYS = ['branch', 'model', 'dot', 'agent', 'warn', 'speed', 'ok', 'fail', 'busy', 'checkpoint', 'lean', 'ahead', 'behind']
 const HEX = /^#[0-9a-f]{6}$/
 
 describe('the eight added skins', () => {

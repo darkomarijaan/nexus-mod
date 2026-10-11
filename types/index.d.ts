@@ -37,8 +37,21 @@ export type NexusWork = {
   agentStarts: Record<string, number>
 }
 
+/** The work tree beside the branch: commits to push and pull, and files by state. */
+export type NexusGit = {
+  upstream: string | null
+  ahead: number
+  behind: number
+  staged: number
+  changed: number
+  untracked: number
+  conflicts: number
+}
+
 export type NexusHud = {
   branch: string | null
+  /** Null outside a git repository, or before the first read. */
+  git: NexusGit | null
   model: string
   tokens: number | null
   window: number | null

@@ -8,6 +8,7 @@ import type {
 
 export const EMPTY_HUD: NexusHud = {
   branch: null,
+  git: null,
   model: '',
   tokens: null,
   window: null,

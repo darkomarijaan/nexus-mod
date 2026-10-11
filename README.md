@@ -46,7 +46,7 @@ A band above the prompt that is always current. It is the screenshot at the top 
 
 | Row | What it shows |
 |---|---|
-| Header | Git branch, model, the [lean mode](#lean-mode) badge `✂ lite · min`, a light for every Claude Code session on the machine (green working, yellow waiting, gray idle) and running subagents (`⚙ 1 agent`) |
+| Header | Git branch with what is waiting beside it (`↑2` commits to push, `↓1` to pull, `+3` files staged, `~2` changed, `?1` untracked, `!1` in conflict; a clean branch in step shows none), model, the [lean mode](#lean-mode) badge `✂ lite · min`, a light for every Claude Code session on the machine (green working, yellow waiting, gray idle) and running subagents (`⚙ 1 agent`) |
 | `5h` / `Wk` | How much of the 5-hour and weekly limit is used, its reset, and a red `⚠ out ~1h 10m` when the pace runs the window out before it resets |
 | `Ctx` / `Cache` | Context tokens against the window, prompt-cache hits, output speed (`⚡ 58 tok/s`) and how warm the cache is (`live`, `warm 2m`, `idle 12m`, `cold`) |
 | Task | The task Claude is on and how much of its todo list is done |
