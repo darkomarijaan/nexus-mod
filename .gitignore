@@ -9,3 +9,6 @@ Thumbs.db
 
 # Packaged copies for sharing
 *.zip
+
+# Browser automation logs
+.playwright-mcp/
