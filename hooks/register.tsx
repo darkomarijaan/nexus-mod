@@ -1161,7 +1161,13 @@ async function runCompress($: Engine, cfg: NexusConfig, args: string): Promise<s
   if ((reply.usage?.output_tokens ?? 0) >= COMPRESS_MAX_TOKENS - 50) return `The helper's reply was cut off (${name} is too long to compress in one go); ${name} is untouched.`
   const result = unwrapFence(reply.text)
   const check = checkCompressed(original, result)
-  if (!check.ok) return `Not written: ${check.reason} ${name} is untouched.`
+  if (!check.ok) {
+    // The helper's version, so the person can see what it changed (one file, overwritten each time).
+    const kept = `${await nexusDir($)}/outputs/compress-last.md`
+    const isKept = await $.fs.write(kept, result).then(() => true, () => false)
+
+    return `Not written: ${check.reason} ${name} is untouched.${isKept ? ` The helper's version is in ${kept}.` : ''}`
+  }
   const answer = await $.ui
     .ask(compressQuestion(name, original, result), { header: 'Compress', options: [COMPRESS_WRITE, 'Cancel'] })
     .catch(() => 'Cancel')

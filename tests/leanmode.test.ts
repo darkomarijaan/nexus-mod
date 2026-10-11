@@ -554,8 +554,11 @@ describe('/compress-nexus', () => {
     const answer = await $.command.run({ command: 'compress-nexus', args: '' } as never)
     expect(answer.text).toContain('Not written')
     expect(answer.text).toContain('bin/claude-nexus.cmd')
+    expect(answer.text).toContain('compress-last.md')
     expect(world.asked).toEqual([])
-    expect(world.writes).toEqual([])
+    // only the helper's version is kept, for the person to compare; CLAUDE.md is not written
+    expect(world.writes.map(write => write.path.replace(/\\/g, '/'))).toEqual([expect.stringMatching(/\.claude\/nexus\/outputs\/compress-last\.md$/)])
+    expect(world.writes[0]?.text).toBe(lossy)
   })
 
   test('a file edited while deciding is left alone', { options: BASE }, async ($, on) => {
