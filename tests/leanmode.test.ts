@@ -1,3 +1,4 @@
+import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { readConfig } from '../hooks/config'
@@ -5,13 +6,16 @@ import { nextStepFrom } from '../hooks/insights'
 import { footerText } from '../hooks/lean'
 import {
   isOverride,
+  isSafeBase,
   leanBadge,
   leanLabel,
   leanRules,
   leanSettings,
   parseLeanArgs,
   readLeanPick,
+  reviewPrompt,
   summaryRules,
+  untrackedFiles,
 } from '../hooks/leanmode'
 
 describe('lean settings', () => {
@@ -272,5 +276,134 @@ describe('output tokens in the footer', () => {
       usage: { input_tokens: 10, output_tokens: 1234, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'claude-opus-5-5' },
     } as never)
     expect(done.text).toBe('⏱ 1m 5s · 1 tool · out 1.2k')
+  })
+})
+
+describe('lean review prompt', () => {
+  test('the prompt carries the ladder, the diff and the new files', () => {
+    const text = reviewPrompt({ base: null, diff: '+const x = 1', stat: '', untracked: ['src/new.ts'] })
+    expect(text).toContain('Already in the codebase? Reuse it.')
+    expect(text).toContain('Do not edit any file')
+    expect(text).toContain('+const x = 1')
+    expect(text).toContain('- src/new.ts')
+  })
+
+  test('a large diff sends the file list only', () => {
+    const text = reviewPrompt({ base: 'main', diff: '', stat: ' a.ts | 900 +++', untracked: [] })
+    expect(text).toContain('against main')
+    expect(text).toContain('too large')
+    expect(text).toContain(' a.ts | 900 +++')
+  })
+
+  test('untracked files come from porcelain lines', () => {
+    expect(untrackedFiles('?? src/new.ts\n M hooks/a.ts\n?? docs/x.md\n')).toEqual(['src/new.ts', 'docs/x.md'])
+  })
+
+  test('a base that looks like a git option is refused', () => {
+    expect(isSafeBase('main')).toBe(true)
+    expect(isSafeBase('origin/release-1.2')).toBe(true)
+    expect(isSafeBase('--output=/tmp/x')).toBe(false)
+    expect(isSafeBase('-p')).toBe(false)
+  })
+})
+
+type Run = { exitCode?: number; stdout?: string; stderr?: string }
+
+/** Answers each git call by its exact argv; anything else succeeds silently. */
+function fakeGit(on: On, answers: Record<string, Run>): string[] {
+  const seen: string[] = []
+  on('process.run', (_, e) => {
+    const key = e.argv.join(' ')
+    seen.push(key)
+    const hit = answers[key] ?? {}
+    return { value: { exitCode: hit.exitCode ?? 0, stdout: hit.stdout ?? '', stderr: hit.stderr ?? '' } } as never
+  })
+  return seen
+}
+
+function submissions(on: On): string[] {
+  const sent: string[] = []
+  on('prompt.submit', (_, e) => {
+    sent.push(e.text)
+    return { text: e.text }
+  })
+  return sent
+}
+
+describe('/lean-review-nexus', () => {
+  test('outside git nothing is sent', { options: BASE }, async ($, on) => {
+    on('session.root', () => ({ value: 'C:/app' }))
+    fakeGit(on, { 'git rev-parse --is-inside-work-tree': { exitCode: 128, stderr: 'fatal: not a git repository' } })
+    const sent = submissions(on)
+    const answer = await $.command.run({ command: 'lean-review-nexus', args: '' } as never)
+    expect(answer.text).toContain('Not a git repository')
+    expect(sent).toEqual([])
+  })
+
+  test('a clean tree is not reviewed', { options: BASE }, async ($, on) => {
+    on('session.root', () => ({ value: 'C:/app' }))
+    fakeGit(on, {})
+    const sent = submissions(on)
+    expect((await $.command.run({ command: 'lean-review-nexus', args: '' } as never)).text).toBe('No changes to review.')
+    expect(sent).toEqual([])
+  })
+
+  test('new files alone are reviewed', { options: BASE }, async ($, on) => {
+    const clock = mock.clock(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    fakeGit(on, { 'git status --porcelain -uall': { stdout: '?? src/new.ts\n' } })
+    const sent = submissions(on)
+    const answer = await $.command.run({ command: 'lean-review-nexus', args: '' } as never)
+    await clock.advance(1)
+    await clock.settle()
+    expect(answer.text).toContain('sent to Claude')
+    expect(sent[0]).toContain('- src/new.ts')
+  })
+
+  test('a repo with no commits yet reviews the staged changes', { options: BASE }, async ($, on) => {
+    const clock = mock.clock(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    const seen = fakeGit(on, {
+      'git rev-parse --verify -q HEAD': { exitCode: 1 },
+      'git diff --cached': { stdout: '+first line' },
+    })
+    const sent = submissions(on)
+    await $.command.run({ command: 'lean-review-nexus', args: '' } as never)
+    await clock.advance(1)
+    await clock.settle()
+    expect(seen).toContain('git diff --cached')
+    expect(sent[0]).toContain('+first line')
+  })
+
+  test('a large diff goes as the file list', { options: BASE }, async ($, on) => {
+    const clock = mock.clock(on)
+    on('session.root', () => ({ value: 'C:/app' }))
+    fakeGit(on, {
+      'git diff HEAD': { stdout: 'x'.repeat(50_000) },
+      'git diff --stat HEAD': { stdout: ' big.ts | 2000 +++' },
+    })
+    const sent = submissions(on)
+    const answer = await $.command.run({ command: 'lean-review-nexus', args: '' } as never)
+    await clock.advance(1)
+    await clock.settle()
+    expect(answer.text).toContain('file list only')
+    expect(sent[0]).toContain(' big.ts | 2000 +++')
+    expect(sent[0]).not.toContain('x'.repeat(1000))
+  })
+
+  test('a base that looks like an option never reaches git diff', { options: BASE }, async ($, on) => {
+    on('session.root', () => ({ value: 'C:/app' }))
+    const seen = fakeGit(on, {})
+    const answer = await $.command.run({ command: 'lean-review-nexus', args: '--output=/tmp/x' } as never)
+    expect(answer.text).toContain('branch, tag or commit')
+    expect(seen.some(call => call.startsWith('git diff'))).toBe(false)
+  })
+
+  test('a wrong base shows what git said', { options: BASE }, async ($, on) => {
+    on('session.root', () => ({ value: 'C:/app' }))
+    fakeGit(on, { 'git diff nope': { exitCode: 128, stderr: "fatal: bad revision 'nope'" } })
+    const sent = submissions(on)
+    expect((await $.command.run({ command: 'lean-review-nexus', args: 'nope' } as never)).text).toContain("fatal: bad revision 'nope'")
+    expect(sent).toEqual([])
   })
 })

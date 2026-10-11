@@ -58,6 +58,7 @@ import {
 } from './provider'
 import {
   isOverride,
+  isSafeBase,
   LEAN_NOTE,
   LEAN_USAGE,
   leanBadge,
@@ -66,7 +67,10 @@ import {
   leanSettings,
   parseLeanArgs,
   readLeanPick,
+  REVIEW_DIFF_LIMIT,
+  reviewPrompt,
   summaryRules,
+  untrackedFiles,
   type LeanPick,
   type LeanSettings,
 } from './leanmode'
@@ -1100,6 +1104,26 @@ async function runLean($: Engine, cfg: NexusConfig, args: string): Promise<strin
   await update($, leanPick, () => pick)
 
   return `${leanLabel(leanSettings(leanBase(cfg), pick))}. ${LEAN_NOTE}`
+}
+
+/** Sends the work tree's changes (or those since `base`) to Claude for a lean review; edits nothing. */
+async function runLeanReview($: Engine, args: string): Promise<string> {
+  const base = args.trim() === '' ? null : args.trim()
+  if (base !== null && !isSafeBase(base)) return `"${base}" is not a base: give a branch, tag or commit, e.g. /lean-review-nexus main`
+  if ((await git($, ['rev-parse', '--is-inside-work-tree'])).exitCode !== 0) return 'Not a git repository: nothing to review.'
+  const hasHead = (await git($, ['rev-parse', '--verify', '-q', 'HEAD'])).exitCode === 0
+  const range = base !== null ? [base] : hasHead ? ['HEAD'] : ['--cached']
+  const diff = await git($, ['diff', ...range])
+  if (diff.exitCode !== 0) return `git diff ${range.join(' ')} failed: ${diff.stderr.trim().slice(0, 400)}`
+  const untracked = untrackedFiles((await git($, ['status', '--porcelain', '-uall'])).stdout)
+  if (diff.stdout.trim() === '' && untracked.length === 0) return 'No changes to review.'
+  const isLarge = diff.stdout.length > REVIEW_DIFF_LIMIT
+  const stat = isLarge ? (await git($, ['diff', '--stat', ...range])).stdout : ''
+  const review = reviewPrompt({ base, diff: isLarge ? '' : diff.stdout, stat, untracked })
+  // A command.run hook holds the turn, so the host refuses a submit from here: send it once the hook has returned.
+  $.clock.after(0, () => void $.prompt.submit({ text: review }).catch(() => undefined))
+
+  return `Lean review${base === null ? '' : ` against ${base}`} sent to Claude${isLarge ? ' (diff too large: file list only)' : ''}.`
 }
 
 // ── Session handoff ──────────────────────────────────────────────────────
@@ -2140,6 +2164,7 @@ const COMMANDS = [
   { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
   { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
+  { name: 'lean-review-nexus', description: 'Nexus: Claude reviews the uncommitted changes (or those since a base) for over-engineering; edits nothing', argumentHint: '[base]' },
 ] as const
 
 const DESIGN_SCHEMA = {
@@ -2332,6 +2357,8 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
 
   on('command.run', { command: 'lean-nexus' }, async ($, e) => ({ text: await runLean($, cfg, e.args) }))
+
+  on('command.run', { command: 'lean-review-nexus' }, async ($, e) => ({ text: await runLeanReview($, e.args) }))
 
   on('command.run', { command: 'provider-nexus' }, async ($, e) => {
     if ((await ensureRouterLink($)) !== null) void watchRouter($, cfg, false).catch(() => undefined)

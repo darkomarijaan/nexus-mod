@@ -130,3 +130,39 @@ export function leanBadge(s: LeanSettings, icon: string): string | null {
 
   return parts.length === 0 ? null : `${icon} ${parts.join(' · ')}`
 }
+
+// ── /lean-review-nexus ───────────────────────────────────────────────────
+
+/** Past this many characters the diff stays out; Claude opens the files itself. */
+export const REVIEW_DIFF_LIMIT = 40_000
+
+/** A branch, tag or commit; never something git would read as an option. */
+export function isSafeBase(base: string): boolean {
+  return base !== '' && !base.startsWith('-') && !/\s/.test(base)
+}
+
+/** The untracked paths in `git status --porcelain` output. */
+export function untrackedFiles(porcelain: string): string[] {
+  return porcelain
+    .split(/\r?\n/)
+    .filter(line => line.startsWith('?? '))
+    .map(line => line.slice(3).trim())
+    .filter(Boolean)
+}
+
+export type ReviewInput = { base: string | null; diff: string; stat: string; untracked: readonly string[] }
+
+export function reviewPrompt(input: ReviewInput): string {
+  const changes =
+    input.diff !== ''
+      ? `Diff:\n\`\`\`diff\n${input.diff}\n\`\`\``
+      : `The diff is too large to include; open the files yourself:\n${input.stat}`
+  const fresh = input.untracked.length > 0 ? `\n\nNew files (read them too):\n${input.untracked.map(file => `- ${file}`).join('\n')}` : ''
+
+  return `Review these changes${input.base === null ? '' : ` against ${input.base}`} for over-engineering (Nexus lean review). Do not edit any file unless I ask.
+For each finding give: file:line, the rung below it breaks, and the simpler alternative. If nothing is over-built, say so in one line.
+${LADDER}
+${NEVER_CUT} One small test for logic is not excess.
+
+${changes}${fresh}`
+}
