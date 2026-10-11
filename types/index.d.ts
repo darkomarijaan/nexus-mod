@@ -129,6 +129,9 @@ export type NexusRouterLink = { url: string; token: string }
 /** The person's /lean-nexus pick over the settings; a missing field follows the settings. */
 export type NexusLeanPick = { talk?: 'off' | 'lite' | 'ultra'; code?: boolean }
 
+/** One MCP server as /mcp-nexus shows it in this project. */
+export type NexusMcpRow = { name: string; tools: number; tokens: number; needsSignIn: boolean; isOff: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
     'nexus': {
@@ -158,6 +161,8 @@ declare module 'claude-code' {
       claudeBackAt: number | null
       /** The /lean-nexus pick, remembered across sessions in $.store. */
       leanPick: NexusLeanPick
+      /** The MCP servers the /mcp-nexus pane lists, read when it opens. */
+      mcpRows: NexusMcpRow[]
     }
   }
 }

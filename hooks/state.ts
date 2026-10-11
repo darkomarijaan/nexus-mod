@@ -43,6 +43,7 @@ export const PANE = {
   shield: 'nexus-shield',
   theme: 'nexus-theme',
   provider: 'nexus-provider',
+  mcp: 'nexus-mcp',
 } as const
 
 export const DESIGN_TOOL = 'mcp__nexus__design_options'

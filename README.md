@@ -96,7 +96,7 @@ Rules in Claude's system prompt, on by default, that cost fewer tokens and produ
 - **Limit forecast**: from how fast usage climbs, a red `⚠ out ~1h 10m` when you will run out before the reset.
 - **Compaction guard**: a warning at 80% context; compaction is told to keep file paths, open tasks, check results and decisions, and right after it Claude gets your last request word for word, the open tasks, the files touched and the opening of CLAUDE.md.
 - **Context audit**: `/context-nexus` shows where the context goes before you type (system prompt, MCP servers, CLAUDE.md, skills by plugin, agent types) and what could go.
-- **MCP servers per project**: `/mcp-nexus off <server>` keeps a server's tools out of Claude's way in this project; `on` brings it back.
+- **MCP servers per project**: `/mcp-nexus` opens a switcher with every server, how many tools and tokens it keeps in front of Claude, and which still need sign-in; one key turns a server off or on in this project, `x` turns off every server not signed in, `o` turns them all back on. From the prompt: `/mcp-nexus off gmail calendar` (part of a name is enough when only one server has it), `off unused`, `on all`, `list`.
 - **Trimmed noisy output**: long install, build, test and log output reaches Claude with routine lines folded (problems, head and tail kept); the whole output is saved to a file Claude can read.
 
 ### Provider router
@@ -193,7 +193,7 @@ From a local folder, first replace its contents with the new release (`git pull`
 | `/commit-nexus` | Commit every change in the work tree with a drafted message, after you confirm it |
 | `/enhance-nexus <rough prompt>` | Rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box |
 | `/context-nexus` | Where the context goes before you type, and what could go |
-| `/mcp-nexus` | MCP servers in this project; `off <server>`, `on <server>` |
+| `/mcp-nexus` | Switcher for the MCP servers in this project; also `list`, `off <names…>`, `on <names…>`, `off unused`, `on all` |
 | `/lean-nexus` | Terse replies and minimal code: `talk off\|lite\|ultra`, `code on\|off`, `off`, `on`, `reset` |
 | `/lean-review-nexus [base]` | Review the changes for over-engineering; edits nothing |
 | `/compress-nexus [file]` | Shorten `CLAUDE.md` (or another memory file) safely, with a backup |

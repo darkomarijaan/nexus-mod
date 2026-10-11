@@ -145,7 +145,7 @@ describe('MCP servers per project', () => {
     expect(off.text).toContain('is off in this project')
     const call = await $.tool.call({ tool: 'mcp__figma__get_file' } as never)
     expect(call.deny).toContain('/mcp-nexus on figma')
-    const listed = await $.command.run({ command: 'mcp-nexus', args: '' } as never)
+    const listed = await $.command.run({ command: 'mcp-nexus', args: 'list' } as never)
     expect(listed.text).toContain('○ off  figma')
     await $.command.run({ command: 'mcp-nexus', args: 'on figma' } as never)
     expect((await $.tool.call({ tool: 'mcp__figma__get_file' } as never)).deny).toBeUndefined()
@@ -155,7 +155,7 @@ describe('MCP servers per project', () => {
     mock.store(on)
     on('session.root', () => ({ value: 'C:/app' }))
     on('tool.list', () => ({ value: [] }) as never)
-    expect((await $.command.run({ command: 'mcp-nexus', args: 'off nope' } as never)).text).toContain('No MCP server "nope"')
+    expect((await $.command.run({ command: 'mcp-nexus', args: 'off nope' } as never)).text).toContain('No MCP server matches "nope". Nothing changed.')
   })
 })
 

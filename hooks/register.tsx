@@ -81,6 +81,7 @@ import {
   type LeanPick,
   type LeanSettings,
 } from './leanmode'
+import { type McpRow, mcpChangeText, mcpListText, mcpRows, mcpSummary, parseMcpArgs, resolveMcp, rowKey } from './mcp'
 import { masksIn, maskSecrets } from './secrets'
 import { claudeThemeFor, paint, pickerKey, type Theme, THEMES, isTheme, themedBar, themeListText, themeOf } from './theme'
 import { isMutatingCommand, mayPush, scanCommand, type ShieldHit } from './shield'
@@ -183,6 +184,8 @@ const routerWatcher = atom({ plugin: 'nexus', key: 'routerWatcher' } as const, 0
 const claudeBackAt = atom({ plugin: 'nexus', key: 'claudeBackAt' } as const, null as number | null)
 // The person's /lean-nexus pick over the settings; $.store keeps it across sessions.
 const leanPick = atom({ plugin: 'nexus', key: 'leanPick' } as const, {} as LeanPick)
+// The MCP servers the /mcp-nexus pane lists, read when it opens.
+const mcpView = atom({ plugin: 'nexus', key: 'mcpRows' } as const, [] as McpRow[])
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -1571,50 +1574,49 @@ async function loadMcpOff($: Engine): Promise<void> {
   mcpOff = Array.isArray(stored) ? stored.filter((one): one is string => typeof one === 'string') : []
 }
 
-async function runMcp($: Engine, args: string): Promise<string> {
-  const [verb = 'list', ...rest] = args.trim().split(/\s+/).filter(Boolean)
-  const name = rest.join(' ')
+/** The MCP servers of this session as rows, with what each keeps in front of Claude. */
+async function mcpNow($: Engine): Promise<McpRow[]> {
   const tools = await $.tool.list().catch(() => [])
   const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
-  const sizes = usage?.context.breakdown?.mcpTools ?? []
-  const servers = new Map<string, { tools: number; tokens: number }>()
-  for (const tool of tools) {
-    const server = mcpServerOf(tool.name)
-    if (server === undefined || server === $.plugin.name) continue
-    const one = servers.get(server) ?? { tools: 0, tokens: 0 }
-    one.tools += 1
-    servers.set(server, one)
-  }
-  for (const size of sizes) {
-    const one = servers.get(size.serverName)
-    if (one !== undefined && size.isLoaded) one.tokens += size.tokens
-  }
-  for (const server of mcpOff) if (!servers.has(server)) servers.set(server, { tools: 0, tokens: 0 })
-  const known = [...servers.keys()]
 
-  if (verb === 'off' || verb === 'on') {
-    if (name === '') return `Name a server: /mcp-nexus ${verb} <server>. Servers: ${known.join(', ') || 'none connected'}.`
-    if (name === $.plugin.name) return 'Nexus keeps its own tools on.'
-    if (verb === 'off' && !servers.has(name)) return `No MCP server "${name}" is connected. Servers: ${known.join(', ') || 'none'}.`
-    mcpOff = verb === 'off' ? [...new Set([...mcpOff, name])] : mcpOff.filter(one => one !== name)
-    await $.store.set(await mcpOffKey($), mcpOff)
-    $.ui.invalidate('tool.describe')
+  return mcpRows(
+    tools.map(tool => tool.name),
+    usage?.context.breakdown?.mcpTools ?? [],
+    mcpOff,
+    $.plugin.name,
+  )
+}
 
-    return verb === 'off'
-      ? `"${name}" is off in this project: its tools wait behind ToolSearch with a one-line note, and a call to one is refused. /mcp-nexus on ${name} brings it back.`
-      : `"${name}" is on again in this project.`
+/** Turns `targets` off or on in this project, remembers it, and redraws the pane. */
+async function switchMcp($: Engine, verb: 'off' | 'on', targets: readonly string[]): Promise<void> {
+  if (targets.length === 0) return
+  mcpOff = verb === 'off' ? [...new Set([...mcpOff, ...targets])] : mcpOff.filter(one => !targets.includes(one))
+  await $.store.set(await mcpOffKey($), mcpOff)
+  $.ui.invalidate('tool.describe')
+  await update($, mcpView, rows => rows.map(row => ({ ...row, isOff: mcpOff.includes(row.name) })))
+}
+
+async function runMcp($: Engine, args: string): Promise<string | undefined> {
+  const parsed = parseMcpArgs(args)
+  if (parsed.verb === 'unknown') {
+    return 'Use /mcp-nexus (the switcher), /mcp-nexus list, /mcp-nexus off <names…> or /mcp-nexus on <names…>; off unused and on all switch many at once.'
   }
-  if (verb !== 'list') return 'Use /mcp-nexus (list), /mcp-nexus off <server> or /mcp-nexus on <server>.'
-  if (servers.size === 0) return 'No MCP server is connected to this session.'
+  const rows = await mcpNow($)
+  if (parsed.verb === 'pane') {
+    await update($, mcpView, () => rows)
+    await openPane($, PANE.mcp, 'MCP servers')
 
-  return [
-    'MCP servers in this project (tokens: tools kept in front of Claude):',
-    ...[...servers.entries()]
-      .sort((a, b) => b[1].tokens - a[1].tokens)
-      .map(([server, one]) => `  ${mcpOff.includes(server) ? '○ off' : '● on '}  ${server.padEnd(28)}${String(one.tools).padStart(4)} tools  ${tokens(one.tokens).padStart(6)}`),
-    '',
-    'Turn one off here with /mcp-nexus off <server>; /context-nexus shows where the rest of the context goes.',
-  ].join('\n')
+    return undefined
+  }
+  if (parsed.verb === 'list') return mcpListText(rows)
+  if (parsed.names.length === 0) {
+    return `Name a server: /mcp-nexus ${parsed.verb} <server>. Servers: ${rows.map(row => row.name).join(', ') || 'none connected'}.`
+  }
+  const { targets, problems } = resolveMcp(parsed.verb, parsed.names, rows, $.plugin.name)
+  if (problems.length > 0) return `${problems.join('. ')}. Nothing changed.`
+  await switchMcp($, parsed.verb, targets)
+
+  return mcpChangeText(parsed.verb, targets)
 }
 
 const QUOTA_KEEP = 'Keep going'
@@ -2220,7 +2222,7 @@ const COMMANDS = [
   { name: 'enhance-nexus', description: 'Nexus: rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box', argumentHint: '<rough prompt>', immediate: true },
   { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
   { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
-  { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <server> | on <server>]', immediate: true },
+  { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <names…> | on <names…> | off unused | on all]', immediate: true },
   { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
   { name: 'lean-review-nexus', description: 'Nexus: Claude reviews the uncommitted changes (or those since a base) for over-engineering; edits nothing', argumentHint: '[base]' },
   { name: 'compress-nexus', description: 'Nexus: shorten CLAUDE.md (or another memory file) with the helper model; shows the saving, asks, keeps a backup', argumentHint: '[file]' },
@@ -2413,7 +2415,11 @@ export const register: Register = (on, options) => {
     return { text: `Enhancing with ${cfg.helperModel}; the rewrite lands in the prompt box in a few seconds. Read it, edit it, then press Enter.` }
   })
 
-  on('command.run', { command: 'mcp-nexus' }, async ($, e) => ({ text: await runMcp($, e.args) }))
+  on('command.run', { command: 'mcp-nexus' }, async ($, e) => {
+    const text = await runMcp($, e.args)
+
+    return text === undefined ? {} : { text }
+  })
 
   on('command.run', { command: 'lean-nexus' }, async ($, e) => ({ text: await runLean($, cfg, e.args) }))
 
@@ -3334,6 +3340,56 @@ export const register: Register = (on, options) => {
         <Text dimColor>
           1-9, a-{pickerKey(THEMES.length - 1)} pick (remembered across sessions){cfg.syncClaudeTheme ? ", Claude Code's theme follows" : ''} · Esc close · /skin-nexus reset for the
           configured one
+        </Text>
+      </Box>
+    )
+  })
+
+  // Drawer: MCP servers in this project, a key per server to turn it on or off.
+  on('ui.render', { component: 'Pane', requestId: PANE.mcp }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const rows = await read($, mcpView)
+    const th = themeOf(await read($, themeName))
+    if (rows.length === 0) return <Text dimColor>No MCP server is connected to this session.</Text>
+    const width = Math.max(12, Math.min(28, e.props.bodyColumns - 40))
+    const bulk = async (verb: 'off' | 'on', word: string) => {
+      const { targets } = resolveMcp(verb, [word], rows, $.plugin.name)
+      await switchMcp($, verb, targets)
+      $.ui.toast(mcpChangeText(verb, targets))
+    }
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>{mcpSummary(rows)}</Text>
+        {rows.map((row, index) => (
+          <Button
+            key={`mcp-${row.name}`}
+            plain
+            {...((key => (key === undefined ? {} : { hotkey: key }))(rowKey(index)))}
+            onPress={() => switchMcp($, row.isOff ? 'on' : 'off', [row.name])}
+          >
+            <Text color={row.isOff ? th.idle : th.ok}>{row.isOff ? '○ off' : '● on '}</Text>
+            {'  '}
+            {clip(row.name, width).padEnd(width)}
+            <Text dimColor>
+              {String(row.tools).padStart(5)} tools {tokens(row.tokens).padStart(6)}
+            </Text>
+            {row.needsSignIn && <Text color={th.warn}>{'  sign-in'}</Text>}
+          </Button>
+        ))}
+        <Box flexDirection="row" marginTop={1} columnGap={3}>
+          <Button
+            key="mcp-unused"
+            plain
+            hotkey="x"
+            label={`Off: not signed in (${rows.filter(row => row.needsSignIn && !row.isOff).length})`}
+            onPress={() => bulk('off', 'unused')}
+          />
+          <Button key="mcp-allon" plain hotkey="o" label="All on" onPress={() => bulk('on', 'all')} />
+        </Box>
+        <Text dimColor>
+          A key turns a server on or off · takes effect from the next request · 0 tokens: its tools already wait behind ToolSearch, so off only
+          blocks calls · Esc close
         </Text>
       </Box>
     )
