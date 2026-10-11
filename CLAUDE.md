@@ -23,7 +23,7 @@ Type-check: no local TypeScript install. The repo `tsconfig.json` extends `.clau
 
 Trying changes in a real session: the installed copy lives in `~/.claude/plugins/cache/nexus-mod/nexus/<version>`. After editing, run `claude plugin update nexus@nexus-mod` (or `/reload-plugins`), or start a session with `claude --plugin-dir <this folder>` to load the working tree directly.
 
-Release zip (`nexus-mod.zip`, git-ignored, built only when asked): `Compress-Archive -Path .claude-plugin, bin, bridge, hooks, types, tests, README.md, CHANGELOG.md, tsconfig.json -DestinationPath nexus-mod.zip`.
+Release zip (`nexus-mod.zip`, git-ignored, built only when asked): `Compress-Archive -Path .claude-plugin, bin, bridge, hooks, types, tests, README.md, CHANGELOG.md, LICENSE, tsconfig.json -DestinationPath nexus-mod.zip`.
 
 ## Architecture
 

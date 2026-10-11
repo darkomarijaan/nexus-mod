@@ -4,6 +4,7 @@
   "author": {
     "name": "eko"
   },
+  "license": "MIT",
   "description": "All-in-one workspace suite: HUD and session monitor, prompt enhancer, assumption review, command shield, secret masking, turn checkpoints with rollback, visual design previews, auto-verify and clean delivery.",
   "types": "./types/index.d.ts",
   "userConfig": {

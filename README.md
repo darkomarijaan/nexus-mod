@@ -194,3 +194,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 - **v0.7**: test-tamper guard, evidence check before "done", `/review-nexus`.
 - **v0.8**: hunk-level diff review, plan annotation in the browser.
 - Later: Telegram remote control, session search, worktree cockpit.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
