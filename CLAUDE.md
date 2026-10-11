@@ -15,7 +15,7 @@ Nexus is a Claude Code **mod** (plugin, marketplace `nexus-mod`, plugin `nexus`)
 claude plugin test .          # all hook tests (tests/*.test.ts), ~20 s; no single-file filter exists
 claude plugin test . 2>&1 | grep -A60 "leanmode.test"   # read one file's results
 claude plugin validate .      # manifest + types contract; must pass
-node --test bridge/           # bridge/router/launcher tests (node:test)
+node --test bridge/*.test.mjs # bridge/router/launcher tests (node:test; a bare bridge/ fails on Node 24)
 node --test bridge/route-core.test.mjs                  # a single bridge test file
 ```
 
