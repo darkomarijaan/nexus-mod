@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import { describe, expect, mock, test } from 'claude-code/testing'
 
 import {
   activityText,
@@ -155,5 +156,108 @@ describe('what the panel shows', () => {
     ]
     expect(agentSummary(runs)).toBe('Agents · 2 running · 1 done · 1 failed · 64k tokens')
     expect(agentSummary([])).toBe('No subagent has run in this session yet.')
+  })
+})
+
+const QUIET = {
+  checkpoints: false,
+  autoVerify: false,
+  designLens: false,
+  assumptionAudit: 'off',
+  handoff: false,
+  notify: false,
+  suggestNext: false,
+  compactGuard: false,
+  loopGuard: false,
+  trimOutput: false,
+  quotaGuard: 0,
+  turnFooter: false,
+} as const
+
+const PANE = { title: 'Agents', isFocused: true, bodyColumns: 100, placement: 'inline', scroll: { offset: 0, bodyRows: 30 }, view: {} } as const
+
+/** Every string a drawn tree holds, joined, so a row can be matched as the terminal shows it. */
+async function drawnText(ui: { drawn: () => Promise<unknown> }): Promise<string> {
+  const flat = (one: unknown): string => {
+    if (typeof one === 'string' || typeof one === 'number') return String(one)
+    if (Array.isArray(one)) return one.map(flat).join('')
+    if (one === null || typeof one !== 'object') return ''
+    return flat((one as { children?: unknown }).children)
+  }
+  return flat(await ui.drawn())
+}
+
+/** The engine beneath the plugin for one subagent's life. */
+function engine(on: On) {
+  on('agent.spawn', () => ({ model: 'claude-haiku-5-5', agentId: 'a1' }))
+  on('tool.call', { tool: 'Grep' }, () => ({ result: {} as never }))
+  on('turn.step', async function* (_, e) {
+    yield { kind: 'text', index: 0, text: '' } as never
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'end_turn',
+      usage: { ...USAGE, model: 'claude-haiku-5-5' },
+    } as never
+  })
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+}
+
+const spawnOne = ($: { agent: { spawn: (input: never) => Promise<unknown> } }) =>
+  $.agent.spawn({
+    tool_use_id: 't1',
+    prompt: 'look around',
+    description: 'Find coupon call sites',
+    subagentType: 'Explore',
+    provider: { kind: 'tool' },
+    parentModel: 'claude-opus-5-5',
+    background: false,
+    fork: false,
+  } as never)
+
+describe('/agents-nexus', () => {
+  test('a subagent is followed from spawn to finish', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    await spawnOne($ as never)
+    await $.tool.call({ tool: 'Grep', pattern: 'applyCoupon', agentId: 'a1' } as never)
+    for await (const _ of $.turn.step({ turnId: 's1', index: 0, model: 'claude-haiku-5-5', messageCount: 1, agentId: 'a1' } as never)) {
+      // drain the stream
+    }
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    const live = await drawnText(ui)
+    expect(live).toContain('Agents · 1 running')
+    expect(live).toContain('Explore')
+    expect(live).toContain('Find coupon call sites')
+    expect(live).toContain('haiku-5-5')
+    expect(live).toContain('18k')
+    expect(live).toContain('1 tools')
+    expect(live).toContain('Grep  applyCoupon')
+    await $.turn.complete({ answer: 'found 4', durationMs: 5000, isAborted: false, turnId: 's1', reason: 'answer', agentId: 'a1' } as never)
+    const after = await drawnText(ui)
+    expect(after).toContain('1 done')
+    expect(after).toContain('Finished')
+    await ui.unmount()
+  })
+
+  test('the main thread is not a subagent', { options: QUIET }, async ($, on) => {
+    mock.clock(on)
+    engine(on)
+    await $.tool.call({ tool: 'Grep', pattern: 'x' } as never)
+    await $.command.run({ command: 'agents-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-agents', props: PANE })
+    expect(await drawnText(ui)).toContain('No subagent has run in this session yet.')
+    await ui.unmount()
+  })
+
+  test('a tool call still answers when the panel cannot record it', { options: QUIET }, async ($, on) => {
+    // No clock beneath the plugin: tracking fails, the call must not.
+    on('tool.call', { tool: 'Grep' }, () => ({ result: { matches: 3 } as never }))
+    const answer = await $.tool.call({ tool: 'Grep', pattern: 'x', agentId: 'a9' } as never)
+    expect(answer.result).toEqual({ matches: 3 })
   })
 })

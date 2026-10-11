@@ -197,6 +197,8 @@ declare module 'claude-code' {
       leanPick: NexusLeanPick
       /** The MCP servers the /mcp-nexus pane lists, read when it opens. */
       mcpRows: NexusMcpRow[]
+      /** The subagents of this session for the Agents panel; never stored across sessions. */
+      agentRuns: NexusAgentRun[]
     }
   }
 }

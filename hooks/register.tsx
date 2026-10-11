@@ -82,6 +82,23 @@ import {
   type LeanPick,
   type LeanSettings,
 } from './leanmode'
+import {
+  type AgentRun,
+  activityText,
+  agentSummary,
+  contextPercent,
+  elapsed,
+  finishedText,
+  isQuiet,
+  onComplete,
+  onSpawn,
+  onToolCall,
+  onUsage,
+  reconcile,
+  shortModel,
+  STEP_TOOL,
+  stepText,
+} from './agents'
 import { GIT_STATUS_ARGS, gitMarks, parseGitStatus } from './gitstat'
 import { type McpRow, mcpChangeText, mcpListText, mcpRows, mcpSummary, parseMcpArgs, resolveMcp, rowKey } from './mcp'
 import { masksIn, maskSecrets } from './secrets'
@@ -188,6 +205,8 @@ const claudeBackAt = atom({ plugin: 'nexus', key: 'claudeBackAt' } as const, nul
 const leanPick = atom({ plugin: 'nexus', key: 'leanPick' } as const, {} as LeanPick)
 // The MCP servers the /mcp-nexus pane lists, read when it opens.
 const mcpView = atom({ plugin: 'nexus', key: 'mcpRows' } as const, [] as McpRow[])
+// The subagents of this session for the Agents panel.
+const agentRuns = atom({ plugin: 'nexus', key: 'agentRuns' } as const, [] as AgentRun[])
 
 // Readings of each usage window, for the forecast; the module's own, so a
 // reload starts them over.
@@ -414,6 +433,23 @@ async function refreshHud($: Engine, isForced = false): Promise<void> {
     at: now,
   }
   await update($, hud, () => next)
+  await trackAgents($, (runs, at) =>
+    reconcile(
+      runs,
+      agents.map(agent => ({ id: agent.id, type: agent.type, description: agent.description, status: agent.status })),
+      at,
+    ),
+  )
+}
+
+/** Records a subagent event for the Agents panel; a failure here never reaches the call it watched. */
+async function trackAgents($: Engine, change: (runs: AgentRun[], now: number) => AgentRun[]): Promise<void> {
+  try {
+    const now = await $.clock.now()
+    await update($, agentRuns, runs => change(runs, now))
+  } catch {
+    // the panel is a view; the call it watched stands
+  }
 }
 
 // ── Checkpoints: a private shadow repo per project ───────────────────────
@@ -2245,6 +2281,7 @@ const COMMANDS = [
   { name: 'enhance-nexus', description: 'Nexus: rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box', argumentHint: '<rough prompt>', immediate: true },
   { name: 'context-nexus', description: 'Nexus: where the context goes before you type (MCP, CLAUDE.md, skills, agents) and what could go', immediate: true },
   { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
+  { name: 'agents-nexus', description: 'Nexus: the subagents of this session, live: model, context, tools, last activity', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <names…> | on <names…> | off unused | on all]', immediate: true },
   { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
   { name: 'lean-review-nexus', description: 'Nexus: Claude reviews the uncommitted changes (or those since a base) for over-engineering; edits nothing', argumentHint: '[base]' },
@@ -2439,6 +2476,12 @@ export const register: Register = (on, options) => {
     return { text: `Enhancing with ${cfg.helperModel}; the rewrite lands in the prompt box in a few seconds. Read it, edit it, then press Enter.` }
   })
 
+  on('command.run', { command: 'agents-nexus' }, async $ => {
+    await openPane($, PANE.agents, 'Agents')
+
+    return {}
+  })
+
   on('command.run', { command: 'mcp-nexus' }, async ($, e) => {
     const text = await runMcp($, e.args)
 
@@ -2611,6 +2654,11 @@ export const register: Register = (on, options) => {
     }))
     try {
       const answer = await next(e)
+      // 4a. A subagent's last tool, for the Agents panel
+      const agentId = e.agentId
+      if (agentId !== undefined) {
+        await trackAgents($, (runs, now) => onToolCall(runs, { agentId, tool, detail: describeInput(e) }, now))
+      }
       // 4b. Long, routine shell output folded before Claude reads it
       const result = cfg.trimOutput && command !== undefined ? await trimShellResult($, command, answer).catch(() => answer) : answer
       if (!cfg.loopGuard || !isMain) return result
@@ -2725,7 +2773,16 @@ export const register: Register = (on, options) => {
   // ── Response readings: speed from the first chunk, cache hits, cut-offs ─
   on('turn.step', async function* ($, e, next) {
     const stream = next(e)
-    if (e.agentId !== undefined) return yield* stream
+    if (e.agentId !== undefined) {
+      const agentId = e.agentId
+      const done = yield* stream
+      const usage = done.usage
+      if (usage !== null) {
+        await trackAgents($, (runs, now) => onUsage(runs, { agentId, model: usage.model || e.model, usage }, now))
+      }
+
+      return done
+    }
     let firstAt: number | null = null
     for await (const chunk of stream) {
       if (firstAt === null) firstAt = await $.clock.now()
@@ -2796,7 +2853,12 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined) return result
+    if (e.agentId !== undefined) {
+      const agentId = e.agentId
+      await trackAgents($, (runs, now) => onComplete(runs, { agentId, isOk: e.reason === 'answer' }, now))
+
+      return result
+    }
     longTurn.startedAt = null
     const finished = await read($, turn)
     await update($, turn, now => ({ ...now, isWorking: false, isWaiting: false, tool: null, detail: null }))
@@ -2926,6 +2988,9 @@ export const register: Register = (on, options) => {
     if (id !== undefined) {
       const at = await $.clock.now()
       await update($, work, now => ({ ...now, agentStarts: { ...now.agentStarts, [id]: at } }))
+      await trackAgents($, (runs, now) =>
+        onSpawn(runs, { agentId: id, type: String(e.subagentType ?? ''), description: String(e.description ?? ''), model: String(result.model ?? '') }, now),
+      )
     }
 
     return result
@@ -3419,6 +3484,69 @@ export const register: Register = (on, options) => {
           A key turns a server on or off · takes effect from the next request · 0 tokens: its tools already wait behind ToolSearch, so off only
           blocks calls · Esc close
         </Text>
+      </Box>
+    )
+  })
+
+  // Drawer: the subagents of this session, live, then the finished ones.
+  on('ui.render', { component: 'Pane', requestId: PANE.agents }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const runs = await read($, agentRuns)
+    if (runs.length === 0) return <Text dimColor>{agentSummary(runs)}</Text>
+    const th = themeOf(await read($, themeName))
+    const ic = th.icons
+    const now = await $.clock.now()
+    const room = Math.max(12, e.props.bodyColumns - 40)
+    const running = runs.filter(run => run.status === 'running')
+    const finished = runs.filter(run => run.status !== 'running').reverse()
+    const mark = (run: AgentRun) =>
+      run.status === 'running' ? (
+        <Text color={th.agent}>{ic.dot}</Text>
+      ) : run.status === 'done' ? (
+        <Text color={th.ok}>{ic.ok}</Text>
+      ) : run.status === 'failed' ? (
+        <Text color={th.bad}>{ic.fail}</Text>
+      ) : (
+        <Text color={th.idle}>{ic.dot}</Text>
+      )
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>{agentSummary(runs)}</Text>
+        {running.length > 0 && <Text dimColor>Running</Text>}
+        {running.map((run, index) => {
+          const percent = contextPercent(run)
+          const step = stepText(run)
+          const activity = activityText(run)
+          return (
+            <Box key={`agent-${run.id}`} flexDirection="column">
+              <Text wrap="truncate-end">
+                {index + 1} {mark(run)} <Text color={th.accent}>{run.type}</Text> {clip(run.description, room)}{' '}
+                {isQuiet(run, now) ? <Text color={th.warn}>{`${ic.warn} quiet `}</Text> : null}
+                <Text dimColor>{elapsed(now - run.startedAt)}</Text>
+              </Text>
+              <Text wrap="truncate-end" dimColor>
+                {'    '}
+                {shortModel(run.model)} · ctx <Text color={percent >= 80 ? th.bad : th.ok}>{themedBar(percent, th, 8)}</Text> {tokens(run.contextTokens)} ·{' '}
+                {run.tools} tools{step === null ? '' : ` · ${step}`}
+              </Text>
+              {activity !== null && (
+                <Text wrap="truncate-end">
+                  {'    '}
+                  <Text color={th.warn}>{ic.busy}</Text> {activity}
+                </Text>
+              )}
+            </Box>
+          )
+        })}
+        {finished.length > 0 && <Text dimColor>Finished</Text>}
+        {finished.map((run, index) => (
+          <Text key={`agent-${run.id}`} wrap="truncate-end">
+            {running.length + index + 1} {mark(run)} <Text color={th.accent}>{run.type}</Text> {clip(run.description, room)}{' '}
+            <Text dimColor>{finishedText(run)}</Text>
+          </Text>
+        ))}
+        <Text dimColor>Esc close</Text>
       </Box>
     )
   })

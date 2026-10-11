@@ -45,6 +45,7 @@ export const PANE = {
   theme: 'nexus-theme',
   provider: 'nexus-provider',
   mcp: 'nexus-mcp',
+  agents: 'nexus-agents',
 } as const
 
 export const DESIGN_TOOL = 'mcp__nexus__design_options'
