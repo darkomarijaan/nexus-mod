@@ -142,6 +142,9 @@ export function isSafeBase(base: string): boolean {
   return base !== '' && !base.startsWith('-') && !/\s/.test(base)
 }
 
+/** New files named in the prompt; a fresh repo without a .gitignore can have tens of thousands. */
+const UNTRACKED_SHOWN = 200
+
 /** The untracked paths in `git status --porcelain` output. */
 export function untrackedFiles(porcelain: string): string[] {
   return porcelain
@@ -158,7 +161,12 @@ export function reviewPrompt(input: ReviewInput): string {
     input.diff !== ''
       ? `Diff:\n\`\`\`diff\n${input.diff}\n\`\`\``
       : `The diff is too large to include; open the files yourself:\n${input.stat}`
-  const fresh = input.untracked.length > 0 ? `\n\nNew files (read them too):\n${input.untracked.map(file => `- ${file}`).join('\n')}` : ''
+  const shown = input.untracked.slice(0, UNTRACKED_SHOWN)
+  const more = input.untracked.length - shown.length
+  const fresh =
+    shown.length > 0
+      ? `\n\nNew files (read them too):\n${shown.map(file => `- ${file}`).join('\n')}${more > 0 ? `\n- … and ${more} more (git status lists them all)` : ''}`
+      : ''
 
   return `Review these changes${input.base === null ? '' : ` against ${input.base}`} for over-engineering (Nexus lean review). Do not edit any file unless I ask.
 For each finding give: file:line, the rung below it breaks, and the simpler alternative. If nothing is over-built, say so in one line.
@@ -176,12 +184,12 @@ export const COMPRESS_RULES = `You compress a Markdown memory file (CLAUDE.md) f
 - Keep the order of sections.
 - Reply with the compressed file only: no preamble, no closing note, no surrounding code fence.`
 
-/** The reply without one code fence wrapped around all of it. */
+/** The reply without one code fence (``` or longer, or ~~~) wrapped around all of it. */
 export function unwrapFence(reply: string): string {
   const text = reply.trim()
-  const fenced = /^```[\w-]*\n([\s\S]*?)\n```$/.exec(text)
+  const fenced = /^(`{3,}|~{3,})[\w-]*\r?\n([\s\S]*?)\r?\n\1\s*$/.exec(text)
 
-  return fenced?.[1] ?? text
+  return fenced?.[2] ?? text
 }
 
 /** A rough count, about four characters a token. */
@@ -192,14 +200,33 @@ export function estimateTokens(text: string): number {
 export type CompressCheck = { ok: true } | { ok: false; reason: string }
 
 const FENCED = /```[\s\S]*?```/g
+const INLINE_CODE = /`[^`\n]+`/g
 const URLS = /https?:\/\/[^\s)>\]`'"]+/g
-const PATHS = /(?:[A-Za-z]:)?(?:~|\.{1,2})?[\\/]?[\w.-]+(?:[\\/][\w.-]+)+[\\/]?/g
-const NUMBERS = /\d+(?:[.,]\d+)*/g
+const SLASHED = /(?:[A-Za-z]:)?[\w.~-]*(?:[\\/][\w.~-]+)+[\\/]?/g
+const NUMBERS = /(?<![\w./\\-])\d+(?:[.,]\d+)*(?![\w/\\-]|[.,]\d)/g
 // "1. " at the start of a list item is numbering, not a fact.
 const LIST_MARKS = /^\s*\d+[.)]\s/gm
+// The full stop or comma that ends the sentence a URL or path closes.
+const TRAILING = /[.,;:!?]+$/
 
-function missing(found: readonly string[] | null, text: string): string[] {
-  return [...new Set(found ?? [])].filter(one => !text.includes(one))
+const slashed = (text: string) => text.replace(/\\/g, '/')
+
+/** A file path, not and/or or CI/CD: an extension, a ./ ../ ~/ / or drive start, or two separators. */
+function isPath(token: string): boolean {
+  const one = slashed(token)
+
+  return /\.[A-Za-z0-9]{1,8}$/.test(one) || /^(?:\.{1,2}\/|~\/|\/|[A-Za-z]:\/)/.test(one) || (one.match(/\//g) ?? []).length >= 2
+}
+
+/** Whether `token` stands in `text` whole: `300` is not in `3000`, nor `src/a.ts` in `src/a.tsx`. */
+function hasToken(text: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+  return new RegExp(`(?<![\\w./\\\\-])${escaped}(?![\\w/\\\\-]|[.,]\\d)`).test(text)
+}
+
+function missing(found: readonly string[], has: (one: string) => boolean): string[] {
+  return [...new Set(found)].filter(one => !has(one))
 }
 
 function named(list: readonly string[]): string {
@@ -214,15 +241,18 @@ export function checkCompressed(original: string, result: string): CompressCheck
   if (after.length < before.length * 0.3) {
     return { ok: false, reason: `The result kept only ${Math.round((after.length / before.length) * 100)}% of the text; too much may be gone.` }
   }
-  const blocks = missing(before.match(FENCED), after)
+  const blocks = missing(before.match(FENCED) ?? [], one => after.includes(one))
   if (blocks.length > 0) return { ok: false, reason: `${blocks.length} code block${blocks.length === 1 ? '' : 's'} changed or missing.` }
   const prose = before.replace(FENCED, ' ')
-  const urls = missing(prose.match(URLS), after)
+  const inline = missing(prose.match(INLINE_CODE) ?? [], one => after.includes(one))
+  if (inline.length > 0) return { ok: false, reason: `${inline.length} inline code span${inline.length === 1 ? '' : 's'} changed or missing: ${named(inline)}.` }
+  const urls = missing((prose.match(URLS) ?? []).map(url => url.replace(TRAILING, '')), one => hasToken(after, one))
   if (urls.length > 0) return { ok: false, reason: `${urls.length} URL${urls.length === 1 ? '' : 's'} missing: ${named(urls)}.` }
   const plain = prose.replace(URLS, ' ')
-  const paths = missing(plain.match(PATHS), after)
+  const candidates = (plain.match(SLASHED) ?? []).map(path => path.replace(TRAILING, '')).filter(isPath)
+  const paths = missing(candidates, one => hasToken(slashed(after), slashed(one)))
   if (paths.length > 0) return { ok: false, reason: `${paths.length} path${paths.length === 1 ? '' : 's'} missing: ${named(paths)}.` }
-  const numbers = missing(plain.replace(LIST_MARKS, ' ').match(NUMBERS), after)
+  const numbers = missing(plain.replace(LIST_MARKS, ' ').match(NUMBERS) ?? [], one => hasToken(after, one))
   if (numbers.length > 0) return { ok: false, reason: `${numbers.length} number${numbers.length === 1 ? '' : 's'} missing: ${named(numbers)}.` }
 
   return { ok: true }

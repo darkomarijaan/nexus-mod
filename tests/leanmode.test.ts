@@ -563,3 +563,63 @@ describe('/compress-nexus', () => {
     expect(world.writes).toEqual([])
   })
 })
+
+describe('final review fixes', () => {
+  test('I-1: a four-backtick or tilde wrapper is dropped too', () => {
+    expect(unwrapFence(`\`\`\`\`markdown\n${SHORT_MD}\n\`\`\`\``)).toBe(SHORT_MD)
+    expect(unwrapFence(`~~~\n${SHORT_MD}\n~~~`)).toBe(SHORT_MD)
+    expect(unwrapFence(`\`\`\`markdown\r\n${SHORT_MD}\r\n\`\`\``)).toBe(SHORT_MD)
+  })
+
+  test('I-4: everyday slashes and a URL ending a sentence are not refused', () => {
+    const original = 'Use the client/server split, and/or CI/CD, about 1/2 of the time. Read https://example.com/docs. Edit hooks\\register.tsx with care, it really matters a lot to us.'
+    const result = 'Client vs server split; CI pipeline about half the time. Read https://example.com/docs - edit hooks/register.tsx carefully.'
+    expect(checkCompressed(original, result)).toEqual({ ok: true })
+  })
+
+  test('I-5: a lost number or path is caught even when a longer one remains', () => {
+    const original = 'Set the timeout to 300 seconds and the cache to 3000 entries, please, always, every single time. Edit src/a.ts and src/a.tsx.'
+    const lostNumber = 'Timeout seconds; cache 3000 entries. Edit src/a.ts and src/a.tsx.'
+    const lostPath = 'Timeout 300 s, cache 3000 entries. Edit src/a.tsx.'
+    expect(checkCompressed(original, lostNumber)).toEqual({ ok: false, reason: expect.stringContaining('300') })
+    expect(checkCompressed(original, lostPath)).toEqual({ ok: false, reason: expect.stringContaining('src/a.ts') })
+  })
+
+  test('I-7: changed inline code is refused', () => {
+    const check = checkCompressed(CLAUDE_MD.replace('`npm test`', '`npm test -- --watch`'), SHORT_MD)
+    expect(check).toEqual({ ok: false, reason: expect.stringContaining('npm test -- --watch') })
+  })
+
+  test('I-3: a long list of new files is capped in the review prompt', () => {
+    const files = Array.from({ length: 250 }, (_, i) => `f${i}.ts`)
+    const text = reviewPrompt({ base: null, diff: '+x', stat: '', untracked: files })
+    expect(text).toContain('- f199.ts')
+    expect(text).not.toContain('- f200.ts')
+    expect(text).toContain('and 50 more')
+  })
+
+  test('I-6: a reply cut off at the token cap is not written', { options: BASE }, async ($, on) => {
+    const world = compressWorld(on, { reply: { isAnswered: true, text: SHORT_MD, usage: { output_tokens: 8000 } } })
+    expect((await $.command.run({ command: 'compress-nexus', args: '' } as never)).text).toContain('cut off')
+    expect(world.asked).toEqual([])
+    expect(world.writes).toEqual([])
+  })
+
+  test('I-2: a review the host refuses to send is reported', { options: BASE }, async ($, on) => {
+    const clock = mock.clock(on)
+    const toasts: string[] = []
+    on('session.root', () => ({ value: 'C:/app' }))
+    fakeGit(on, { 'git diff HEAD': { stdout: '+x' } })
+    on('prompt.submit', () => {
+      throw new Error('refused')
+    })
+    on('ui.toast', (_, e) => {
+      toasts.push(String((e as { text?: unknown }).text ?? ''))
+      return { value: {} } as never
+    })
+    await $.command.run({ command: 'lean-review-nexus', args: '' } as never)
+    await clock.advance(1)
+    await clock.settle()
+    expect(toasts.join('\n')).toContain('could not be sent')
+  })
+})

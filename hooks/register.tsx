@@ -1128,12 +1128,18 @@ async function runLeanReview($: Engine, args: string): Promise<string> {
   const stat = isLarge ? (await git($, ['diff', '--stat', ...range])).stdout : ''
   const review = reviewPrompt({ base, diff: isLarge ? '' : diff.stdout, stat, untracked })
   // A command.run hook holds the turn, so the host refuses a submit from here: send it once the hook has returned.
-  $.clock.after(0, () => void $.prompt.submit({ text: review }).catch(() => undefined))
+  $.clock.after(0, () => {
+    void $.prompt.submit({ text: review }).catch((error: unknown) => {
+      $.ui.toast(`Lean review could not be sent: ${clip(error instanceof Error ? error.message : String(error), 160)}`)
+    })
+  })
 
   return `Lean review${base === null ? '' : ` against ${base}`} sent to Claude${isLarge ? ' (diff too large: file list only)' : ''}.`
 }
 
 const COMPRESS_WRITE = 'Write'
+// The helper's reply cap; a reply that reaches it was cut off and has lost the file's tail.
+const COMPRESS_MAX_TOKENS = 8000
 
 /** Compresses a memory file with the helper model, checks it, asks, then backs up and writes. */
 async function runCompress($: Engine, cfg: NexusConfig, args: string): Promise<string> {
@@ -1144,7 +1150,7 @@ async function runCompress($: Engine, cfg: NexusConfig, args: string): Promise<s
   await update($, busy, () => `Compressing ${name}`)
   let reply: Awaited<ReturnType<Engine['model']['complete']>> | null = null
   try {
-    reply = await $.model.complete({ model: cfg.helperModel, system: COMPRESS_RULES, prompt: original, maxTokens: 8000, timeoutMs: 120_000 })
+    reply = await $.model.complete({ model: cfg.helperModel, system: COMPRESS_RULES, prompt: original, maxTokens: COMPRESS_MAX_TOKENS, timeoutMs: 120_000 })
   } catch {
     reply = null
   } finally {
@@ -1152,6 +1158,7 @@ async function runCompress($: Engine, cfg: NexusConfig, args: string): Promise<s
   }
   if (reply === null) return `Compression failed; ${name} is untouched.`
   if (!reply.isAnswered) return `Compression failed (${reply.reason}); ${name} is untouched.`
+  if ((reply.usage?.output_tokens ?? 0) >= COMPRESS_MAX_TOKENS - 50) return `The helper's reply was cut off (${name} is too long to compress in one go); ${name} is untouched.`
   const result = unwrapFence(reply.text)
   const check = checkCompressed(original, result)
   if (!check.ok) return `Not written: ${check.reason} ${name} is untouched.`
