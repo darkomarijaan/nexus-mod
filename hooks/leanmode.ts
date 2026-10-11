@@ -242,6 +242,9 @@ export function checkCompressed(original: string, result: string): CompressCheck
   const before = original.replace(/\r\n/g, '\n').trim()
   const after = result.replace(/\r\n/g, '\n').trim()
   if (after.length >= before.length) return { ok: false, reason: 'The result is not shorter than the original.' }
+  if (after.length > before.length * 0.95) {
+    return { ok: false, reason: `The result is only ${Math.round((1 - after.length / before.length) * 1000) / 10}% shorter; not worth rewriting the file.` }
+  }
   if (after.length < before.length * 0.3) {
     return { ok: false, reason: `The result kept only ${Math.round((after.length / before.length) * 100)}% of the text; too much may be gone.` }
   }
@@ -276,12 +279,14 @@ export function compressTarget(arg: string, root: string, home: string): string 
   return `${root}/${one.replace(/^\.\//, '')}`
 }
 
-/** `<path>.bak-YYYYMMDD-HHMMSS`, in UTC. */
-export function backupName(path: string, ms: number): string {
+/** `<dir>/<project folder>-<file>.bak-YYYYMMDD-HHMMSS`, in UTC: outside the project, so no commit picks it up. */
+export function backupName(path: string, ms: number, dir: string): string {
   const at = new Date(ms)
   const two = (n: number) => String(n).padStart(2, '0')
+  const parts = path.split('/')
+  const name = [parts.at(-2), parts.at(-1)].filter(Boolean).join('-')
 
-  return `${path}.bak-${at.getUTCFullYear()}${two(at.getUTCMonth() + 1)}${two(at.getUTCDate())}-${two(at.getUTCHours())}${two(at.getUTCMinutes())}${two(at.getUTCSeconds())}`
+  return `${dir}/${name}.bak-${at.getUTCFullYear()}${two(at.getUTCMonth() + 1)}${two(at.getUTCDate())}-${two(at.getUTCHours())}${two(at.getUTCMinutes())}${two(at.getUTCSeconds())}`
 }
 
 /** The question before writing: the saving and the opening of the result. */

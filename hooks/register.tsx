@@ -1173,7 +1173,7 @@ async function runCompress($: Engine, cfg: NexusConfig, args: string): Promise<s
     .catch(() => 'Cancel')
   if (answer !== COMPRESS_WRITE) return `Cancelled; ${name} is untouched.`
   if ((await $.fs.read(path).catch(() => null)) !== original) return `${name} changed while you were deciding; nothing written. Run /compress-nexus again.`
-  const backup = backupName(path, await $.clock.now())
+  const backup = backupName(path, await $.clock.now(), `${await nexusDir($)}/backups`)
   try {
     await $.fs.write(backup, original)
   } catch {

@@ -469,6 +469,8 @@ describe('compress check', () => {
 
   test('a result that is not shorter, or kept too little, is refused', () => {
     expect(refused(`${CLAUDE_MD}\nMore.`)).toContain('not shorter')
+    // a rewording that saves a few bytes is churn, not compression
+    expect(refused(CLAUDE_MD.replace('it is really important', 'it is important'))).toContain('not worth')
     expect(refused('# Project rules')).toContain('kept only')
   })
 
@@ -488,7 +490,10 @@ describe('compress target and backup', () => {
   })
 
   test('the backup name carries the UTC time', () => {
-    expect(backupName('C:/app/CLAUDE.md', Date.UTC(2026, 9, 11, 8, 5, 9))).toBe('C:/app/CLAUDE.md.bak-20261011-080509')
+    // backups go to Nexus's own folder, named after the project folder, never into the project
+    expect(backupName('C:/app/CLAUDE.md', Date.UTC(2026, 9, 11, 8, 5, 9), 'C:/Users/me/.claude/nexus/backups')).toBe(
+      'C:/Users/me/.claude/nexus/backups/app-CLAUDE.md.bak-20261011-080509',
+    )
   })
 })
 
@@ -529,7 +534,10 @@ describe('/compress-nexus', () => {
     expect(world.asked[0]).toContain('CLAUDE.md')
     expect(world.asked[0]).toContain('→')
     // the host hands fs.write hooks its own path spelling (backslashes on Windows)
-    expect(world.writes.map(write => write.path.replace(/\\/g, '/'))).toEqual(['C:/app/CLAUDE.md.bak-20261011-080509', 'C:/app/CLAUDE.md'])
+    expect(world.writes.map(write => write.path.replace(/\\/g, '/'))).toEqual([
+      expect.stringMatching(/\.claude\/nexus\/backups\/app-CLAUDE\.md\.bak-20261011-080509$/),
+      'C:/app/CLAUDE.md',
+    ])
     expect(world.writes[0]?.text).toBe(CLAUDE_MD)
     expect(world.writes[1]?.text).toBe(`${SHORT_MD}\n`)
     expect(answer.text).toContain('CLAUDE.md.bak-20261011-080509')

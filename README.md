@@ -99,7 +99,7 @@ Use these paths, not the copy under `.claude\plugins\cache\...`: that folder's n
 | `/mcp-nexus` | MCP servers in this project; `/mcp-nexus off <server>`, `/mcp-nexus on <server>` |
 | `/lean-nexus` | Terse replies and minimal code: `/lean-nexus talk off\|lite\|ultra`, `/lean-nexus code on\|off`, `/lean-nexus off`, `/lean-nexus reset` (back to Settings) |
 | `/lean-review-nexus` | Claude reviews the uncommitted changes (or `/lean-review-nexus main`) for over-engineering and reports `file:line` findings; edits nothing |
-| `/compress-nexus` | Shortens `CLAUDE.md` (or `/compress-nexus <file>`) with the helper model, shows the saving, asks, and keeps `<file>.bak-<time>` |
+| `/compress-nexus` | Shortens `CLAUDE.md` (or `/compress-nexus <file>`) with the helper model, shows the saving, asks, and keeps a backup of the original (refuses a result that changes a code block, inline code, path, URL or number, or saves under 5%) |
 | `/skin-nexus` | Open the skin picker. Also `/skin-nexus <name>`, `/skin-nexus list`, `/skin-nexus reset` (back to the configured one) |
 | `/provider-nexus` | Provider profiles: add, edit, test, use. Also `/provider-nexus <name\|claude>` (switch), `/provider-nexus status`, `/provider-nexus test <name>` |
 
@@ -183,6 +183,7 @@ Change these with `/plugin configure nexus@nexus-mod` in Claude Code (or `/plugi
 - Rollback does not cover `node_modules`, `dist`, `build`, `.venv` or other build folders.
 - Previews and screenshots are written to `~/.claude/nexus/previews/`.
 - Whole outputs of trimmed commands go to `~/.claude/nexus/outputs/` (the last 30).
+- `/compress-nexus` keeps each original in `~/.claude/nexus/backups/<project folder>-<file>.bak-<time>`, never in your project; a refused result is left in `~/.claude/nexus/outputs/compress-last.md` for comparison.
 - Session handoffs are kept in the plugin's own store, one per project; nothing is written into your project.
 - Sounds use the system's own (`Windows Notify System Generic` and `Windows Exclamation` on Windows). Whether the notification shows as a desktop toast depends on Claude Code's notification channel (`/config`, Notifications).
 
