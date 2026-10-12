@@ -6,8 +6,10 @@ import {
   hostAllowed,
   hubHeaders,
   hubModel,
+  hubModelChain,
   hubTarget,
   isInference,
+  isModelFailure,
   planLimit,
   routeFor,
   tierOf,
@@ -30,6 +32,21 @@ test('an empty tier takes the first filled model, opus then sonnet then haiku', 
   assert.equal(hubModel('claude-sonnet-5-5', MODELS), 'big')
   assert.equal(hubModel('claude-sonnet-5-5', { haiku: 'only' }), 'only')
   assert.equal(hubModel('claude-sonnet-5-5', {}), undefined)
+})
+
+test('a failed model falls to the next tier down, then up, each hub model once', () => {
+  const three = { opus: 'a', sonnet: 'b', haiku: 'c' }
+  assert.deepEqual(hubModelChain('claude-opus-5-5', three), ['a', 'b', 'c'])
+  assert.deepEqual(hubModelChain('claude-sonnet-5-5', three), ['b', 'c', 'a'])
+  assert.deepEqual(hubModelChain('claude-haiku-5-5', three), ['c', 'b', 'a'])
+  assert.deepEqual(hubModelChain('claude-opus-5-5', { opus: 'a', sonnet: 'a', haiku: 'c' }), ['a', 'c'])
+  assert.deepEqual(hubModelChain('claude-sonnet-5-5', { opus: 'a' }), ['a'])
+  assert.deepEqual(hubModelChain('claude-sonnet-5-5', {}), [])
+})
+
+test('only a failure another model might not have is worth another model', () => {
+  for (const status of [404, 408, 429, 500, 502, 503, 529]) assert.equal(isModelFailure(status), true, String(status))
+  for (const status of [200, 400, 401, 403, 413]) assert.equal(isModelFailure(status), false, String(status))
 })
 
 test('hub headers: allowlist only, OAuth beta and credentials never pass', () => {

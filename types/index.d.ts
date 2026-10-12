@@ -114,13 +114,16 @@ export type NexusProviderSummary = {
   hubUrl: string
   key: string
   model: string
+  /** The hub model per Claude tier: what the badge names for the model in use. */
+  models: { opus?: string; sonnet?: string; haiku?: string }
   contextWindow: number
   fallback: boolean
   isDefault: boolean
+  modelFallback: boolean
 }
 /** The profile being added or edited in the pane, one field at a time. */
 export type NexusProviderDraft = {
-  step: 'name' | 'hubUrl' | 'apiKey' | 'opus' | 'sonnet' | 'haiku' | 'contextWindow' | 'fallback'
+  step: 'name' | 'hubUrl' | 'apiKey' | 'opus' | 'sonnet' | 'haiku' | 'modelFallback' | 'contextWindow' | 'fallback'
   editing: string | null
   values: Record<string, string>
   models: string[]

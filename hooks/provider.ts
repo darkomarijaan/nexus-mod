@@ -14,6 +14,8 @@ export type ProviderProfile = {
   contextWindow: number
   fallback: boolean
   isDefault: boolean
+  /** When a model fails on the hub, the router tries the profile's other models. */
+  modelFallback: boolean
 }
 
 export type ProfileDraft = {
@@ -24,6 +26,7 @@ export type ProfileDraft = {
   contextWindow?: string | number
   fallback?: boolean
   isDefault?: boolean
+  modelFallback?: boolean
 }
 
 export const DEFAULT_WINDOW = 200_000
@@ -53,6 +56,15 @@ export function primaryModel(models: ProviderModels): string | undefined {
   return TIERS.map(tier => models[tier]).find((one): one is string => typeof one === 'string' && one !== '')
 }
 
+/** The hub model the router sends a Claude model to: its tier's (opus, sonnet, haiku; anything else counts as sonnet), else the first filled. */
+export function hubModelFor(claudeModel: string, models: ProviderModels): string | undefined {
+  const id = claudeModel.toLowerCase()
+  const tier = id.includes('opus') ? 'opus' : id.includes('haiku') ? 'haiku' : 'sonnet'
+  const own = models[tier]
+
+  return typeof own === 'string' && own !== '' ? own : primaryModel(models)
+}
+
 export function validateProfile(
   draft: ProfileDraft,
   others: readonly ProviderProfile[],
@@ -73,7 +85,7 @@ export function validateProfile(
   if (Object.keys(errors).length > 0) return { profile: null, errors }
 
   return {
-    profile: { name, hubUrl, apiKey, models, contextWindow: rawWindow, fallback: draft.fallback === true, isDefault: draft.isDefault === true },
+    profile: { name, hubUrl, apiKey, models, contextWindow: rawWindow, fallback: draft.fallback === true, isDefault: draft.isDefault === true, modelFallback: draft.modelFallback === true },
     errors: null,
   }
 }
@@ -117,9 +129,9 @@ export function hubBadge(route: string, model: string | null): string {
   return model === null ? `⇄ ${route}` : `⇄ ${route} · ${model}`
 }
 
-export type DraftStep = 'name' | 'hubUrl' | 'apiKey' | 'opus' | 'sonnet' | 'haiku' | 'contextWindow' | 'fallback'
+export type DraftStep = 'name' | 'hubUrl' | 'apiKey' | 'opus' | 'sonnet' | 'haiku' | 'modelFallback' | 'contextWindow' | 'fallback'
 
-export const DRAFT_STEPS: readonly DraftStep[] = ['name', 'hubUrl', 'apiKey', 'opus', 'sonnet', 'haiku', 'contextWindow', 'fallback']
+export const DRAFT_STEPS: readonly DraftStep[] = ['name', 'hubUrl', 'apiKey', 'opus', 'sonnet', 'haiku', 'modelFallback', 'contextWindow', 'fallback']
 
 export function nextStep(step: DraftStep): DraftStep | null {
   return DRAFT_STEPS[DRAFT_STEPS.indexOf(step) + 1] ?? null
@@ -132,7 +144,7 @@ export function modelChoices(listed: readonly string[], current: string | undefi
   return ['', ...new Set([...kept, ...listed.filter(id => id !== '')])]
 }
 
-/** The pane's answers as a profile draft; fallback answers: no, yes, yes-default. */
+/** The pane's answers as a profile draft; fallback answers: no, yes, yes-default; modelFallback: no, yes. */
 export function draftToProfile(values: Record<string, string>): ProfileDraft {
   return {
     name: values.name,
@@ -142,6 +154,7 @@ export function draftToProfile(values: Record<string, string>): ProfileDraft {
     contextWindow: values.contextWindow,
     fallback: values.fallback === 'yes' || values.fallback === 'yes-default',
     isDefault: values.fallback === 'yes-default',
+    modelFallback: values.modelFallback === 'yes',
   }
 }
 

@@ -6,7 +6,20 @@ import { request as httpsRequest } from 'node:https'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { pipeline } from 'node:stream'
 
-import { claudeHeaders, hostAllowed, hubHeaders, hubModel, hubTarget, isInference, planLimit, routeFor, toHubBody, withSafeToolIds } from './route-core.mjs'
+import {
+  claudeHeaders,
+  hostAllowed,
+  hubHeaders,
+  hubModel,
+  hubModelChain,
+  hubTarget,
+  isInference,
+  isModelFailure,
+  planLimit,
+  routeFor,
+  toHubBody,
+  withSafeToolIds,
+} from './route-core.mjs'
 
 const same = (given, expected) => {
   const a = Buffer.from(String(given ?? ''))
@@ -147,15 +160,32 @@ export async function startRouter({
     const route = `hub:${state.route}`
     state.counts.hub += 1
     state.usedHub = true
-    const out = Buffer.from(JSON.stringify(toHubBody(parseBody(body), profile.models)))
+    const input = parseBody(body)
+    const hubBody = toHubBody(input, profile.models)
+    // With model fallback on, a model request whose model fails goes on to the profile's next model.
+    const chain = profile.modelFallback && isInference(req.method, req.url) ? hubModelChain(input.model, profile.models) : []
+    const models = chain.length > 1 ? chain : [hubBody.model]
     let upstream
-    try {
-      upstream = await send(hubTarget(profile.hubUrl, req.url), req.method, hubHeaders(req.headers, profile.apiKey), out, signal)
-    } catch (error) {
-      note(ctx, route, 502, failure(error))
-      if (signal.aborted) return
-      emit({ type: 'upstream-error', route: state.route, status: 502 })
-      return apiError(res, 502, `the hub "${state.route}" could not be reached (${error.code ?? 'unknown error'})`)
+    for (const [index, model] of models.entries()) {
+      const next = models[index + 1]
+      const out = Buffer.from(JSON.stringify({ ...hubBody, model }))
+      try {
+        upstream = await send(hubTarget(profile.hubUrl, req.url), req.method, hubHeaders(req.headers, profile.apiKey), out, signal)
+      } catch (error) {
+        note(ctx, route, 502, failure(error))
+        if (signal.aborted) return
+        if (next !== undefined) {
+          emit({ type: 'model-fallback', route: state.route, from: model, to: next, status: 502 })
+          continue
+        }
+        emit({ type: 'upstream-error', route: state.route, status: 502 })
+        return apiError(res, 502, `the hub "${state.route}" could not be reached (${error.code ?? 'unknown error'})`)
+      }
+      if (next === undefined || !isModelFailure(upstream.statusCode ?? 502)) break
+      // Nothing of this answer reached Claude Code yet: drop it and ask the next model.
+      note(ctx, route, upstream.statusCode)
+      upstream.destroy()
+      emit({ type: 'model-fallback', route: state.route, from: model, to: next, status: upstream.statusCode })
     }
     const status = upstream.statusCode ?? 502
     // count_tokens 404s are a hub's normal answer without that endpoint; only a failed model request is news.
@@ -248,7 +278,7 @@ export async function startRouter({
       }
       if (typeof input.route !== 'string' || input.route === '' || !validProfile(input.profile)) return json(res, 400, { error: 'route needs a name and a profile with hubUrl, apiKey and a model' })
       state.route = input.route
-      state.profile = { hubUrl: input.profile.hubUrl, apiKey: input.profile.apiKey, models: input.profile.models }
+      state.profile = { hubUrl: input.profile.hubUrl, apiKey: input.profile.apiKey, models: input.profile.models, modelFallback: input.profile.modelFallback === true }
       // Whoever changed the route, Nexus is told, so its badge says where requests really go.
       emit({ type: 'route', route: state.route, model: hubModel('claude-opus', state.profile.models) ?? null })
       return json(res, 200, { ok: true, route: state.route })

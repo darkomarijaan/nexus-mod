@@ -6,6 +6,7 @@ import {
   draftToProfile,
   fallbackChoices,
   hubBadge,
+  hubModelFor,
   maskKey,
   modelChoices,
   needsCompaction,
@@ -30,6 +31,7 @@ const MYHUB: ProviderProfile = {
   contextWindow: 1_000_000,
   fallback: true,
   isDefault: true,
+  modelFallback: false,
 }
 
 describe('provider profiles', () => {
@@ -44,6 +46,7 @@ describe('provider profiles', () => {
       contextWindow: 200_000,
       fallback: false,
       isDefault: false,
+      modelFallback: false,
     })
   })
 
@@ -81,6 +84,24 @@ describe('provider profiles', () => {
 
   test('a stored fallback and default flag survive the read', () => {
     expect(readProfiles([MYHUB])[0]).toMatchObject({ fallback: true, isDefault: true })
+  })
+
+  test('model fallback is kept per profile, off unless set', () => {
+    expect(readProfiles([{ ...MYHUB, modelFallback: true }])[0]?.modelFallback).toBe(true)
+    const { modelFallback: _, ...old } = MYHUB
+    expect(readProfiles([old])[0]?.modelFallback).toBe(false)
+    expect(draftToProfile({ modelFallback: 'yes' }).modelFallback).toBe(true)
+    expect(draftToProfile({ modelFallback: 'no' }).modelFallback).toBe(false)
+  })
+
+  test('the hub model for the Claude model in use: its tier, else the first filled', () => {
+    const three = { opus: 'big', sonnet: 'mid', haiku: 'small' }
+    expect(hubModelFor('claude-opus-5-5', three)).toBe('big')
+    expect(hubModelFor('claude-sonnet-5-5', three)).toBe('mid')
+    expect(hubModelFor('claude-haiku-5-5', three)).toBe('small')
+    expect(hubModelFor('Haiku 5.5', three)).toBe('small')
+    expect(hubModelFor('claude-haiku-5-5', { opus: 'big' })).toBe('big')
+    expect(hubModelFor('claude-haiku-5-5', {})).toBeUndefined()
   })
 
   test('the primary model is opus, then sonnet, then haiku', () => {
@@ -263,7 +284,7 @@ describe('router link in a claude-nexus session', () => {
     const answer = await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
     expect(answer.text).toContain('myhub')
     const route = calls.find(one => one.url.endsWith('/__nexus/route'))
-    expect(route?.body).toEqual({ route: 'myhub', profile: { hubUrl: MYHUB.hubUrl, apiKey: MYHUB.apiKey, models: MYHUB.models, contextWindow: MYHUB.contextWindow } })
+    expect(route?.body).toEqual({ route: 'myhub', profile: { hubUrl: MYHUB.hubUrl, apiKey: MYHUB.apiKey, models: MYHUB.models, contextWindow: MYHUB.contextWindow, modelFallback: false } })
     expect(written.all().length).toBeGreaterThan(0)
     expect(written.all()).not.toContain(MYHUB.apiKey)
     expect(written.of('provider').map(one => one.json).join(' ')).toContain('sk-a…mnop')
@@ -280,6 +301,44 @@ describe('router link in a claude-nexus session', () => {
     await $.command.run({ command: 'provider-nexus', args: 'use claude' } as never)
     expect(await ui.find({ type: 'Text', text: /⇄ myhub/ })).toBeUndefined()
     await ui.unmount()
+  })
+
+  test('the HUD badge follows the Claude model in use to the hub model of its tier', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [{ ...MYHUB, models: { opus: 'big-model', sonnet: 'mid-model', haiku: 'small-model' } }] })
+    const { clock } = routerEnv(on)
+    let model = 'claude-opus-5-5'
+    on('session.model', () => ({ value: model }))
+    on('session.usage', () => ({ value: { context: { tokens: 0, window: 1_000_000, percent: 0 }, rateLimits: [] } }) as never)
+    on('fs.exists', () => ({ value: false }))
+    on('fs.list', () => ({ value: [] }) as never)
+    on('session.id', () => ({ value: 'sess-1' }))
+    on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }) as never)
+    await $.session.start?.(START as never)
+    const band = { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 10 }, view: {} }
+    await $.command.run({ command: 'provider-nexus', args: 'use myhub' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'AbovePrompt', props: band })
+    expect(await ui.find({ type: 'Text', text: /⇄ myhub · big-model/ })).toBeDefined()
+    // /model sonnet: the next HUD refresh names sonnet's hub model.
+    model = 'claude-sonnet-5-5'
+    await clock.advance(4000)
+    await clock.settle()
+    expect(await ui.find({ type: 'Text', text: /⇄ myhub · mid-model/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a model fallback on the hub is told in a toast naming both models', { options: { ...BASE_OPTIONS, fallbackMode: 'off' } }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    const events: unknown[][] = [[{ type: 'model-fallback', route: 'myhub', from: 'big-model', to: 'mid-model', status: 503 }]]
+    const { clock } = routerEnv(on, events)
+    const toasts: string[] = []
+    on('ui.toast', (_, e) => {
+      toasts.push(String((e as { text?: unknown }).text ?? ''))
+      return { value: undefined } as never
+    })
+    await $.session.start?.(START as never)
+    await clock.advance(2000)
+    await clock.settle()
+    expect(toasts.some(one => one.includes('big-model') && one.includes('503') && one.includes('mid-model'))).toBe(true)
   })
 
   test('a state the host reset does not lose the link: status and use claude still work, and the route comes back', { options: BASE_OPTIONS }, async ($, on) => {
@@ -518,6 +577,7 @@ describe('editing the profile in use', () => {
     await ui.input({ key: 'opus', text: 'new-model' })
     await ui.input({ key: 'sonnet', text: '' })
     await ui.input({ key: 'haiku', text: '' })
+    await ui.select({ key: 'modelFallback', value: 'no' })
     await ui.input({ key: 'contextWindow', text: '500000' })
     await ui.select({ key: 'fallback', value: 'yes' })
     await ui.unmount()
@@ -529,7 +589,7 @@ describe('editing the profile in use', () => {
     const { calls, written } = await edit($ as never, on, true)
     const posts = calls.filter(one => one.url.endsWith('/__nexus/route')).map(one => one.body as { route: string; profile: Record<string, unknown> })
     expect(posts.map(one => one.route)).toEqual(['myhub', 'myhub'])
-    expect(posts.at(-1)?.profile).toEqual({ hubUrl: 'https://new.example/v1', apiKey: 'sk-brand-new-key-123', models: { opus: 'new-model' }, contextWindow: 500_000 })
+    expect(posts.at(-1)?.profile).toEqual({ hubUrl: 'https://new.example/v1', apiKey: 'sk-brand-new-key-123', models: { opus: 'new-model' }, contextWindow: 500_000, modelFallback: false })
     expect(written.all()).not.toContain('sk-brand-new-key-123')
   })
 
@@ -553,7 +613,7 @@ describe('profile draft', () => {
   test('draft values become a profile draft; yes marks fallback and default', () => {
     expect(
       draftToProfile({ name: 'myhub', hubUrl: 'https://h/v1', apiKey: 'k', opus: 'm', sonnet: '', haiku: '', contextWindow: '', fallback: 'yes-default' }),
-    ).toEqual({ name: 'myhub', hubUrl: 'https://h/v1', apiKey: 'k', models: { opus: 'm', sonnet: '', haiku: '' }, contextWindow: '', fallback: true, isDefault: true })
+    ).toEqual({ name: 'myhub', hubUrl: 'https://h/v1', apiKey: 'k', models: { opus: 'm', sonnet: '', haiku: '' }, contextWindow: '', fallback: true, isDefault: true, modelFallback: false })
   })
 })
 
@@ -622,6 +682,7 @@ describe('provider pane', () => {
     await ui.select({ key: 'opus', value: 'm-one' })
     await ui.select({ key: 'sonnet', value: '' })
     await ui.select({ key: 'haiku', value: '' })
+    await ui.select({ key: 'modelFallback', value: 'yes' })
     await ui.input({ key: 'contextWindow', text: '' })
     await ui.select({ key: 'fallback', value: 'yes-default' })
     // What was saved, read back through the store: the tidied URL, the one model, the key kept whole there.
@@ -633,7 +694,7 @@ describe('provider pane', () => {
     // Once saved the draft (and the key it held) is gone and the list shows the key masked.
     const last = JSON.parse(writes.filter(one => one.includes('"draft"')).at(-1) ?? '{}') as { draft: unknown; profiles: { key: string }[] }
     expect(last.draft).toBeNull()
-    expect(last.profiles[0]).toMatchObject({ key: 'sk-a…mnop', contextWindow: 200_000, fallback: true, isDefault: true })
+    expect(last.profiles[0]).toMatchObject({ key: 'sk-a…mnop', contextWindow: 200_000, fallback: true, isDefault: true, modelFallback: true })
     // Not one write to state, at any point of the form, held the key.
     expect(writes.length).toBeGreaterThan(5)
     expect(writes.join(' ')).not.toContain('sk-abcdefghijklmnop')
@@ -657,6 +718,7 @@ describe('provider pane', () => {
     await ui.input({ key: 'opus', text: 'm' })
     await ui.input({ key: 'sonnet', text: '' })
     await ui.input({ key: 'haiku', text: '' })
+    await ui.select({ key: 'modelFallback', value: 'no' })
     await ui.input({ key: 'contextWindow', text: '' })
     await ui.select({ key: 'fallback', value: 'no' })
     expect(await ui.find({ type: 'Text', text: /already exists/ })).toBeDefined()
@@ -714,6 +776,7 @@ describe('provider pane', () => {
     await ui.input({ key: 'opus', text: 'new-model' })
     await ui.input({ key: 'sonnet', text: '' })
     await ui.input({ key: 'haiku', text: '' })
+    await ui.select({ key: 'modelFallback', value: 'no' })
     await ui.input({ key: 'contextWindow', text: '500000' })
     await ui.select({ key: 'fallback', value: 'yes' })
     await $.command.run({ command: 'provider-nexus', args: 'test myhub' } as never)
@@ -764,7 +827,9 @@ describe('provider pane', () => {
     await ui.input({ key: 'name', text: 'myhub' })
     await ui.input({ key: 'hubUrl', text: MYHUB.hubUrl })
     await ui.input({ key: 'apiKey', text: 'sk-newnewnewnewnew' })
-    for (const step of ['opus', 'sonnet', 'haiku', 'contextWindow']) await ui.input({ key: step, text: step === 'opus' ? 'm' : '' })
+    for (const step of ['opus', 'sonnet', 'haiku']) await ui.input({ key: step, text: step === 'opus' ? 'm' : '' })
+    await ui.select({ key: 'modelFallback', value: 'no' })
+    await ui.input({ key: 'contextWindow', text: '' })
     await ui.select({ key: 'fallback', value: 'no' })
     await $.command.run({ command: 'provider-nexus', args: 'test myhub' } as never)
     expect(keys).toEqual(['sk-newnewnewnewnew', 'sk-newnewnewnewnew'])
@@ -795,6 +860,7 @@ describe('provider pane', () => {
     await ui.input({ key: 'opus', text: 'm' })
     await ui.input({ key: 'sonnet', text: '' })
     await ui.input({ key: 'haiku', text: '' })
+    await ui.select({ key: 'modelFallback', value: 'no' })
     await ui.input({ key: 'contextWindow', text: '' })
     await ui.select({ key: 'fallback', value: 'no' })
     expect(await ui.find({ type: 'Text', text: /the hub needs a key/ })).toBeDefined()

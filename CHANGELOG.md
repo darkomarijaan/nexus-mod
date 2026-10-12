@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.4 (2026-10-12)
+
+- **Model fallback on a hub:** a profile can hand a request whose model fails (connection lost, 404, 408, 429, 5xx) to its other models, tiers below first (opus → sonnet → haiku; sonnet → haiku → opus; haiku → sonnet → opus), each model once; a toast names both. A request the hub refuses as such (400, 401, 403) is not retried. Asked per profile in the `/provider-nexus` form; profiles saved before keep it off until edited.
+- **The badge follows `/model`:** `⇄ <profile> · <model>` in the HUD, the pane, `/provider-nexus status` and the switch message name the hub model for the Claude model in use, not always the opus one.
+
 ## 0.6.3 (2026-10-12)
 
 - **Provider form:** editing a profile now picks its models from the hub's list, as adding one does. The model already set stays a choice even when the hub leaves it out of its list (or past the first 60).

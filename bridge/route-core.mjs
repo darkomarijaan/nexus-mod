@@ -23,6 +23,23 @@ export function hubModel(model, models) {
   return first === undefined ? undefined : first.trim()
 }
 
+// After a tier's own model fails: the tiers below it first, then the ones above.
+const FALLBACK_ORDER = { opus: ['sonnet', 'haiku'], sonnet: ['haiku', 'opus'], haiku: ['sonnet', 'opus'] }
+
+/** The hub models to try for a Claude model id, in order: its own (as hubModel picks it), then the other tiers', each model once. */
+export function hubModelChain(model, models) {
+  const first = hubModel(model, models)
+  if (first === undefined) return []
+  const rest = FALLBACK_ORDER[tierOf(model)].map(tier => models?.[tier]).filter(filled).map(one => one.trim())
+
+  return [...new Set([first, ...rest])]
+}
+
+/** A hub failure another model might not share: not found, timeout, throttled, or the hub's own trouble. */
+export function isModelFailure(status) {
+  return status === 404 || status === 408 || status === 429 || status >= 500
+}
+
 const TO_HUB = ['content-type', 'accept', 'anthropic-version']
 
 /** Headers for a hub request: an allowlist, the OAuth beta dropped, the hub key added. Never the caller's credentials. */

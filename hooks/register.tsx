@@ -42,6 +42,7 @@ import {
   draftToProfile,
   fallbackChoices,
   hubBadge,
+  hubModelFor,
   maskKey,
   modelChoices,
   needsCompaction,
@@ -1819,10 +1820,19 @@ function summarize(profile: ProviderProfile) {
     hubUrl: profile.hubUrl,
     key: maskKey(profile.apiKey),
     model: primaryModel(profile.models) ?? '',
+    models: profile.models,
     contextWindow: profile.contextWindow,
     fallback: profile.fallback,
     isDefault: profile.isDefault,
+    modelFallback: profile.modelFallback,
   }
+}
+
+/** The hub model a badge names: the one the router sends the Claude model in use to. */
+function badgeModel(view: NexusProviderView, claudeModel: string): string | null {
+  const models = view.profiles.find(one => one.name === view.route)?.models
+
+  return (models === undefined || claudeModel === '' ? undefined : hubModelFor(claudeModel, models)) ?? view.model
 }
 
 async function loadProfiles($: Engine): Promise<ProviderProfile[]> {
@@ -1881,7 +1891,7 @@ const CANCEL = 'Cancel'
 const postRoute = ($: Engine, profile: ProviderProfile) =>
   routerCall($, 'POST', '/__nexus/route', {
     route: profile.name,
-    profile: { hubUrl: profile.hubUrl, apiKey: profile.apiKey, models: profile.models, contextWindow: profile.contextWindow },
+    profile: { hubUrl: profile.hubUrl, apiKey: profile.apiKey, models: profile.models, contextWindow: profile.contextWindow, modelFallback: profile.modelFallback },
   })
 
 /** Points the router at Claude or a profile; the text says what happened. */
@@ -1914,8 +1924,9 @@ async function useRoute($: Engine, name: string, options: { askCompact?: boolean
   const model = primaryModel(profile.models) ?? null
   await update($, provider, now => ({ ...now, route: profile.name, model, lastHub: profile.name }))
   await $.store.set(LAST_HUB_KEY, profile.name).catch(() => undefined)
+  const inUse = hubModelFor(await $.session.model().catch(() => ''), profile.models) ?? model
 
-  return `Now on ${profile.name}${model === null ? '' : ` (${model})`}. Requests go to ${profile.hubUrl}; /provider-nexus use claude goes back.`
+  return `Now on ${profile.name}${inUse === null ? '' : ` (${inUse})`}. Requests go to ${profile.hubUrl}; /provider-nexus use claude goes back.`
 }
 
 async function providerStatus($: Engine): Promise<string> {
@@ -1924,11 +1935,11 @@ async function providerStatus($: Engine): Promise<string> {
   if (!answer.ok) return 'The router did not answer. Is this session still running under claude-nexus?'
   const route = String(answer.data.route ?? 'claude')
   const model = typeof answer.data.model === 'string' ? answer.data.model : null
-  await update($, provider, now => ({ ...now, route, model }))
+  const view = await update($, provider, now => ({ ...now, route, model }))
   const counts = answer.data.counts as { claude?: number; hub?: number } | undefined
 
   return [
-    `Route: ${route === 'claude' ? 'Claude (subscription)' : hubBadge(route, model)}`,
+    `Route: ${route === 'claude' ? 'Claude (subscription)' : hubBadge(route, badgeModel(view, await $.session.model().catch(() => '')))}`,
     `Requests this session: ${counts?.claude ?? 0} to Claude, ${counts?.hub ?? 0} to hubs`,
     `Profiles: ${(await loadProfiles($)).map(one => one.name).join(', ') || 'none yet (/provider-nexus to add one)'}`,
   ].join('\n')
@@ -1986,6 +1997,10 @@ async function limitAction($: Engine, cfg: NexusConfig, event: Record<string, un
 }
 
 async function handleRouterEvent($: Engine, cfg: NexusConfig, event: Record<string, unknown>): Promise<void> {
+  if (event.type === 'model-fallback') {
+    $.ui.toast(`The hub ${String(event.route)}: ${String(event.from)} answered ${String(event.status)}, so ${String(event.to)} takes this request.`, { timeoutMs: 8000 })
+    return
+  }
   if (event.type === 'upstream-error') {
     $.ui.toast(`The hub ${String(event.route)} answered ${String(event.status)}. /provider-nexus use claude goes back to Claude.`, { timeoutMs: 8000 })
     return
@@ -2044,6 +2059,7 @@ const STEP_LABEL: Record<DraftStep, string> = {
   opus: 'Model for opus requests',
   sonnet: 'Model for sonnet requests (empty: same as the first one filled)',
   haiku: 'Model for haiku requests (empty: same as the first one filled)',
+  modelFallback: "When a model fails on the hub, try this profile's other models?",
   contextWindow: 'Context window in tokens (empty: 200000)',
   fallback: 'Offer this profile when Claude quota runs out?',
 }
@@ -2088,6 +2104,7 @@ async function startDraft($: Engine, editing: string | null): Promise<void> {
           haiku: profile.models.haiku ?? '',
           contextWindow: String(profile.contextWindow),
           fallback: profile.isDefault ? 'yes-default' : profile.fallback ? 'yes' : 'no',
+          modelFallback: profile.modelFallback ? 'yes' : 'no',
         }
   await update($, provider, now => ({ ...now, draft: { step: 'name' as const, editing, values, models: [], error: null } }))
 }
@@ -3208,7 +3225,7 @@ export const register: Register = (on, options) => {
               <Text key={`git-${mark.text}`} color={th[mark.role]}>{` ${mark.text}`}</Text>
             ))}
             {route.route !== 'claude' ? (
-              <Text color={tint('magenta')}> · {hubBadge(route.route, route.model)}</Text>
+              <Text color={tint('magenta')}> · {hubBadge(route.route, badgeModel(route, now.model))}</Text>
             ) : (
               now.model !== '' && <Text> · {ic.model} {now.model}</Text>
             )}
@@ -3662,6 +3679,18 @@ export const register: Register = (on, options) => {
               value={draft.values.fallback ?? 'no'}
               onSelect={value => void submitDraftField($, value)}
             />
+          ) : draft.step === 'modelFallback' && Select !== undefined ? (
+            <Select
+              key="modelFallback"
+              label={label}
+              autoFocus
+              options={[
+                { value: 'yes', label: 'Yes: opus falls to sonnet, then haiku (each model once)' },
+                { value: 'no', label: 'No: a failing model is the answer' },
+              ]}
+              value={draft.values.modelFallback ?? 'yes'}
+              onSelect={value => void submitDraftField($, value)}
+            />
           ) : isModel && draft.models.length > 0 && Select !== undefined ? (
             <Select
               key={draft.step}
@@ -3692,7 +3721,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         <Text bold>
           {view.linked
-            ? `Route: ${view.route === 'claude' ? 'Claude (subscription)' : hubBadge(view.route, view.model)}`
+            ? `Route: ${view.route === 'claude' ? 'Claude (subscription)' : hubBadge(view.route, badgeModel(view, (await read($, hud)).model))}`
             : 'Plain claude session (on Claude). Use copies a command that resumes this conversation under claude-nexus, on that profile.'}
         </Text>
         {view.linked && view.route !== 'claude' && <Button key="claude" plain hotkey="0" label="Use Claude" onPress={async () => $.ui.toast(await useRoute($, 'claude'))} />}

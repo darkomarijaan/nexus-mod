@@ -12,6 +12,9 @@ const seen = { anthropic: [], hub: [] }
 let anthropicMode = 'ok'
 let hubMode = 'ok'
 let hangClosed = false
+// Hub models that answer 503, or whose connection drops, in the model-fallback tests.
+const hubFails = new Set()
+const hubDrops = new Set()
 
 function fake(name, handler) {
   return new Promise(resolve => {
@@ -86,7 +89,13 @@ before(async () => {
     if (anthropicMode === 'hang') return void req.socket.once('close', () => (hangClosed = true))
     sse(res, 'from-claude')
   })
-  hub = await fake('hub', (req, res) => {
+  hub = await fake('hub', (req, res, body) => {
+    const asked = body === '' ? undefined : JSON.parse(body).model
+    if (hubDrops.has(asked)) return res.socket.destroy()
+    if (hubFails.has(asked)) {
+      res.writeHead(503, { 'content-type': 'application/json' })
+      return res.end(`{"type":"error","error":{"type":"overloaded_error","message":"${asked} is down"}}`)
+    }
     if (hubMode === 'truncate') return truncate(res)
     if (hubMode === 'echo') {
       res.writeHead(401, { 'content-type': 'application/json' })
@@ -476,4 +485,91 @@ test('a plan-limit 429 passes straight through when Nexus has not polled lately,
   assert.equal((await pending).status, 429)
   await quick.close()
   anthropicMode = 'ok'
+})
+
+const THREE = { opus: 'big', sonnet: 'mid', haiku: 'small' }
+const hubModels = since => seen.hub.slice(since).map(one => JSON.parse(one.body).model)
+
+async function withThree(modelFallback, run) {
+  await control('/__nexus/route', 'POST', { route: 'myhub', profile: { ...PROFILE, models: THREE, modelFallback } })
+  await drain()
+  try {
+    await run()
+  } finally {
+    hubFails.clear()
+    hubDrops.clear()
+    await control('/__nexus/route', 'POST', { route: 'claude' })
+    await drain()
+  }
+}
+
+test('each tier goes to its own hub model', async () => {
+  await withThree(false, async () => {
+    const since = seen.hub.length
+    for (const model of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
+      await call({ ...inference(), body: { model, messages: [{ role: 'user', content: 'hi' }] } })
+    }
+    assert.deepEqual(hubModels(since), ['big', 'mid', 'small'])
+  })
+})
+
+test('with model fallback on, a failing model is answered by the next one down, and Nexus is told', async () => {
+  await withThree(true, async () => {
+    hubFails.add('big')
+    const since = seen.hub.length
+    const answer = await call(inference())
+    assert.equal(answer.status, 200)
+    assert.match(answer.text, /from-hub/)
+    assert.deepEqual(hubModels(since), ['big', 'mid'])
+    assert.deepEqual(await drain(), [{ type: 'model-fallback', route: 'myhub', from: 'big', to: 'mid', status: 503 }])
+  })
+})
+
+test('a dropped connection falls back too', async () => {
+  await withThree(true, async () => {
+    hubDrops.add('mid')
+    const since = seen.hub.length
+    const answer = await call({ ...inference(), body: { model: 'claude-sonnet-5-5', messages: [] } })
+    assert.equal(answer.status, 200)
+    assert.deepEqual(hubModels(since), ['mid', 'small'])
+    assert.deepEqual(await drain(), [{ type: 'model-fallback', route: 'myhub', from: 'mid', to: 'small', status: 502 }])
+  })
+})
+
+test('when every model fails, the last error reaches Claude Code and the hub error is announced once', async () => {
+  await withThree(true, async () => {
+    for (const one of ['big', 'mid', 'small']) hubFails.add(one)
+    const since = seen.hub.length
+    const answer = await call(inference())
+    assert.equal(answer.status, 503)
+    assert.match(answer.text, /small is down/)
+    assert.deepEqual(hubModels(since), ['big', 'mid', 'small'])
+    assert.deepEqual(await drain(), [
+      { type: 'model-fallback', route: 'myhub', from: 'big', to: 'mid', status: 503 },
+      { type: 'model-fallback', route: 'myhub', from: 'mid', to: 'small', status: 503 },
+      { type: 'upstream-error', route: 'myhub', status: 503 },
+    ])
+  })
+})
+
+test('with model fallback off, a failing model is the answer', async () => {
+  await withThree(false, async () => {
+    hubFails.add('big')
+    const since = seen.hub.length
+    const answer = await call(inference())
+    assert.equal(answer.status, 503)
+    assert.deepEqual(hubModels(since), ['big'])
+    assert.deepEqual(await drain(), [{ type: 'upstream-error', route: 'myhub', status: 503 }])
+  })
+})
+
+test('a request the hub refuses as such (400) is not tried on another model', async () => {
+  await withThree(true, async () => {
+    hubMode = 'big'
+    const since = seen.hub.length
+    const answer = await call(inference())
+    hubMode = 'ok'
+    assert.equal(answer.status, 400)
+    assert.deepEqual(hubModels(since), ['big'])
+  })
 })

@@ -235,9 +235,10 @@ Switching providers needs Claude Code started through the launcher, `claude-nexu
    [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ";$env:USERPROFILE\.claude\plugins\marketplaces\nexus-mod\bin", 'User')
    ```
    macOS, Linux: add `export PATH="$HOME/.claude/plugins/marketplaces/nexus-mod/bin:$PATH"` to `~/.zshrc` or `~/.bashrc`. Use these paths, not the copy under `.claude/plugins/cache/...`, whose name changes with every update. Check with `claude-nexus --version`; `claude-nexus` takes every `claude` argument (`claude-nexus --resume <id>`, `claude-nexus -c`).
-2. **Once: add a profile.** `/provider-nexus` → **Add profile**: a name, the hub URL (the base that ends in `/v1`, such as `https://hub.example.com/v1`), the API key, the models for opus, sonnet and haiku picked from the hub's list, the context window, and whether to offer it when Claude's quota runs out. **Test** sends one short request per model. Profiles, keys included, live in Nexus's local store and are masked everywhere.
-3. **Switch** with `ctrl+x tab r`, **Use** in the pane, or `/provider-nexus myhub`. It takes effect at the next request; `r` again (or `/provider-nexus claude`) goes back. The HUD shows `⇄ <profile> · <model>` while a hub is in use.
-4. **From a plain `claude` session** the same switch copies `cd "<project>"; claude-nexus --resume <this session>`: type `/exit`, paste, Enter, and the conversation goes on under `claude-nexus`, already on that profile.
+2. **Once: add a profile.** `/provider-nexus` → **Add profile**: a name, the hub URL (the base that ends in `/v1`, such as `https://hub.example.com/v1`), the API key, the models for opus, sonnet and haiku picked from the hub's list, whether a failing model hands the request to the profile's other models, the context window, and whether to offer it when Claude's quota runs out. **Test** sends one short request per model. Profiles, keys included, live in Nexus's local store and are masked everywhere.
+3. **Switch** with `ctrl+x tab r`, **Use** in the pane, or `/provider-nexus myhub`. It takes effect at the next request; `r` again (or `/provider-nexus claude`) goes back. The HUD shows `⇄ <profile> · <model>` while a hub is in use, naming the hub model for the Claude model in use: `/model opus`, `sonnet` or `haiku` switches between the profile's three models at the next request.
+4. **Model fallback** (per profile, asked in the form): when the model a request goes to fails on the hub (connection lost, 404, 408, 429, 5xx), the router sends the same request to the profile's next model, tiers below first (opus → sonnet → haiku; sonnet → haiku → opus; haiku → sonnet → opus), each model once, and a toast names both. A request the hub refuses as such (400, 401, 403) is not retried.
+5. **From a plain `claude` session** the same switch copies `cd "<project>"; claude-nexus --resume <this session>`: type `/exit`, paste, Enter, and the conversation goes on under `claude-nexus`, already on that profile.
 
 The hub must speak the Anthropic Messages API (`POST <hub URL>/messages`). Set `NEXUS_ROUTER_DEBUG=1` before `claude-nexus` to log each request's route and status to `~/.claude/nexus/router-<pid>.log`.
 
@@ -321,7 +322,7 @@ The hooks live in `hooks/` (TypeScript; `register.tsx` is the only module that t
 ## Roadmap
 
 - **v0.5**: provider router; v0.5.1: one-key switch, switching from a plain session by resuming it under `claude-nexus`.
-- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2: git counts in the HUD, the Agents panel; v0.6.3 (this version): the provider form picks models from the hub on an edit too.
+- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2: git counts in the HUD, the Agents panel; v0.6.3: the provider form picks models from the hub on an edit too; v0.6.4 (this version): model fallback on a hub, the badge follows `/model`.
 - **v0.7**: test-tamper guard, evidence check before "done", `/review-nexus`.
 - **v0.8**: hunk-level diff review, plan annotation in the browser.
 - Later: Telegram remote control, session search, worktree cockpit.
