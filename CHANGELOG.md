@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.5 (2026-10-12)
+
+- **Provider pane:** each profile is one row, `● 1: Use myhub   Test  Edit  Delete`. Its model, masked key, context window and fallback mark are no longer listed; the route line still names the model in use, and **Edit** shows the rest.
+
 ## 0.6.4 (2026-10-12)
 
 - **Model fallback on a hub:** a profile can hand a request whose model fails (connection lost, 404, 408, 429, 5xx) to its other models, tiers below first (opus → sonnet → haiku; sonnet → haiku → opus; haiku → sonnet → opus), each model once; a toast names both. A request the hub refuses as such (400, 401, 403) is not retried. Asked per profile in the `/provider-nexus` form; profiles saved before keep it off until edited.

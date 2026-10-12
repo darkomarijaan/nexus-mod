@@ -625,16 +625,17 @@ async function drawn(ui: { drawn: () => Promise<unknown> }): Promise<string> {
 }
 
 describe('provider pane', () => {
-  test('a saved profile shows its key masked, never whole', { options: BASE_OPTIONS }, async ($, on) => {
+  test('a saved profile is one row: Use <name>, then Test, Edit, Delete; the key is never drawn', { options: BASE_OPTIONS }, async ($, on) => {
     mock.store(on, { providers: [MYHUB] })
     on('session.root', () => ({ value: 'C:/app' }))
     on('env.get', () => ({ value: undefined }))
     on('ui.open', () => ({ value: { isPlaced: true } }))
     await $.command.run({ command: 'provider-nexus', args: '' } as never)
     const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
-    expect(await ui.find({ type: 'Text', text: /myhub/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: new RegExp(maskKey(MYHUB.apiKey)) })).toBeDefined()
+    expect((await ui.find({ key: 'use-myhub' }))?.props.label).toBe('Use myhub')
+    for (const key of ['test-myhub', 'edit-myhub', 'del-myhub']) expect(await ui.find({ key })).toBeDefined()
     expect(await drawn(ui)).not.toContain(MYHUB.apiKey)
+    expect(await drawn(ui)).not.toContain(maskKey(MYHUB.apiKey))
     await ui.unmount()
   })
 
@@ -879,7 +880,7 @@ describe('provider pane', () => {
     expect((await ui.find({ key: 'use-p9' }))?.props.hotkey).toBe('9')
     expect(await ui.find({ key: 'use-p10' })).toBeDefined()
     expect((await ui.find({ key: 'use-p10' }))?.props.hotkey).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /p10/ })).toBeDefined()
+    expect((await ui.find({ key: 'use-p10' }))?.props.label).toBe('Use p10')
     await ui.unmount()
   })
 

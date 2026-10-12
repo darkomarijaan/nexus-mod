@@ -3728,17 +3728,13 @@ export const register: Register = (on, options) => {
         {view.profiles.length === 0 && <Text dimColor>No profiles yet.</Text>}
         {view.profiles.map((one, index) => (
           <Box key={`p-${one.name}`} flexDirection="column">
-            <Text>
-              {one.name === view.route ? '● ' : '  '}
-              <Text bold>{one.name}</Text> · {one.model} · {one.key} · {one.contextWindow} tok
-              {one.fallback ? (one.isDefault ? ' · fallback (default)' : ' · fallback') : ''}
-            </Text>
             <Box flexDirection="row" columnGap={2}>
+              <Text>{one.name === view.route ? '●' : ' '}</Text>
               <Button
                 key={`use-${one.name}`}
                 plain
                 {...(index < 9 ? { hotkey: String(index + 1) } : {})}
-                label="Use"
+                label={`Use ${one.name}`}
                 onPress={async press => $.ui.toast(await useRoute($, one.name, { surface: press.surface }), { timeoutMs: 12_000 })}
               />
               <Button key={`test-${one.name}`} plain label="Test" onPress={async () => void (await testProfile($, one.name))} />
