@@ -321,7 +321,7 @@ The hooks live in `hooks/` (TypeScript; `register.tsx` is the only module that t
 ## Roadmap
 
 - **v0.5**: provider router; v0.5.1: one-key switch, switching from a plain session by resuming it under `claude-nexus`.
-- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2 (this version): git counts in the HUD, the Agents panel.
+- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2: git counts in the HUD, the Agents panel; v0.6.3 (this version): the provider form picks models from the hub on an edit too.
 - **v0.7**: test-tamper guard, evidence check before "done", `/review-nexus`.
 - **v0.8**: hunk-level diff review, plan annotation in the browser.
 - Later: Telegram remote control, session search, worktree cockpit.

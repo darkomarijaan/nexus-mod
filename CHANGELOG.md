@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.3 (2026-10-12)
+
+- **Provider form:** editing a profile now picks its models from the hub's list, as adding one does. The model already set stays a choice even when the hub leaves it out of its list (or past the first 60).
+
 ## 0.6.2 (2026-10-11)
 
 - **Git counts in the HUD:** beside the branch, `↑2` commits to push, `↓1` to pull, `+3` files staged, `~2` changed, `?1` untracked, `!1` in conflict, in the skin's colors (`^` and `v` in ASCII skins); a clean branch in step shows none. One `git --no-optional-locks status --porcelain=v2 --branch` reads it all; a turn that changed files reads it again at once, and a status too slow for its timeout still names the branch.

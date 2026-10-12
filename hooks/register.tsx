@@ -43,6 +43,7 @@ import {
   fallbackChoices,
   hubBadge,
   maskKey,
+  modelChoices,
   needsCompaction,
   nextStep,
   normalizeHubUrl,
@@ -3666,7 +3667,7 @@ export const register: Register = (on, options) => {
               key={draft.step}
               label={label}
               autoFocus
-              options={[{ value: '', label: '(empty)' }, ...draft.models.map(id => ({ value: id }))]}
+              options={modelChoices(draft.models, draft.values[draft.step]).map(id => (id === '' ? { value: '', label: '(empty)' } : { value: id }))}
               value={draft.values[draft.step] ?? ''}
               onSelect={value => void submitDraftField($, value)}
             />

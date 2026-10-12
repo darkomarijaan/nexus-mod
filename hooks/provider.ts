@@ -125,6 +125,13 @@ export function nextStep(step: DraftStep): DraftStep | null {
   return DRAFT_STEPS[DRAFT_STEPS.indexOf(step) + 1] ?? null
 }
 
+/** A model step's choices: empty, the model already in that step (an edit's, even when the hub left it out), then the hub's list. */
+export function modelChoices(listed: readonly string[], current: string | undefined): string[] {
+  const kept = current === undefined || current === '' ? [] : [current]
+
+  return ['', ...new Set([...kept, ...listed.filter(id => id !== '')])]
+}
+
 /** The pane's answers as a profile draft; fallback answers: no, yes, yes-default. */
 export function draftToProfile(values: Record<string, string>): ProfileDraft {
   return {

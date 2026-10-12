@@ -7,6 +7,7 @@ import {
   fallbackChoices,
   hubBadge,
   maskKey,
+  modelChoices,
   needsCompaction,
   nextStep,
   parseProviderArgs,
@@ -543,6 +544,10 @@ describe('profile draft', () => {
     expect(DRAFT_STEPS[0]).toBe('name')
     expect(nextStep('apiKey')).toBe('opus')
     expect(nextStep('fallback')).toBeNull()
+    // An edit's model stays a choice even when the hub's list left it out.
+    expect(modelChoices(['a', 'b'], 'z')).toEqual(['', 'z', 'a', 'b'])
+    expect(modelChoices(['a', 'b'], 'b')).toEqual(['', 'b', 'a'])
+    expect(modelChoices(['a'], undefined)).toEqual(['', 'a'])
   })
 
   test('draft values become a profile draft; yes marks fallback and default', () => {
@@ -720,7 +725,29 @@ describe('provider pane', () => {
     await ui.unmount()
   })
 
-  test('a new key typed on an edit replaces the stored one', { options: BASE_OPTIONS }, async ($, on) => {
+  test('an edit offers the hub models too, with the stored ones kept as choices', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on, { providers: [MYHUB] })
+    on('session.root', () => ({ value: 'C:/app' }))
+    on('env.get', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    mock.clock(on)
+    on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ data: [{ id: 'm-one' }, { id: 'm-two' }] }) } }))
+    await $.command.run({ command: 'provider-nexus', args: '' } as never)
+    const ui = await $.ui.mount({ plugin: 'nexus', surface: 'terminal', component: 'Pane', requestId: 'nexus-provider', props: PANE })
+    await ui.press({ key: 'edit-myhub' })
+    await ui.input({ key: 'name', text: 'myhub' })
+    await ui.input({ key: 'hubUrl', text: MYHUB.hubUrl })
+    await ui.input({ key: 'apiKey', text: '' })
+    const opus = await ui.find({ type: 'Select', key: 'opus' })
+    expect(opus).toBeDefined()
+    const values = (opus?.props.options as { value: string }[]).map(one => one.value)
+    expect(values).toContain('m-one')
+    expect(values).toContain(MYHUB.models.opus)
+    expect(opus?.props.value).toBe(MYHUB.models.opus)
+    await ui.unmount()
+  })
+
+  test('a new key typed on an edit replaces the stored one',{ options: BASE_OPTIONS }, async ($, on) => {
     mock.store(on, { providers: [MYHUB] })
     on('session.root', () => ({ value: 'C:/app' }))
     on('env.get', () => ({ value: undefined }))
