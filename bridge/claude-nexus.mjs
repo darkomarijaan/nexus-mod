@@ -9,6 +9,9 @@ import { constants as osConstants, homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
 import { startRouter } from './router.mjs'
+import { latestSession, resumeHint } from './resume.mjs'
+
+const startedAt = Date.now()
 
 const token = randomBytes(32).toString('hex')
 const controlToken = randomBytes(32).toString('hex')
@@ -65,6 +68,15 @@ const forward = signal => () => {
   if (child !== undefined) child.kill(signal)
 }
 
+// Claude prints its hint only on a terminal; so do we.
+const printResumeHint = () => {
+  if (!process.stdout.isTTY) return
+  try {
+    const id = latestSession(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), process.cwd(), startedAt)
+    if (id !== undefined) process.stdout.write(`\x1b[2m${resumeHint('claude-nexus', id)}\x1b[22m\n`)
+  } catch {}
+}
+
 const finish = async code => {
   try {
     await router.close()
@@ -87,6 +99,7 @@ const start = useShell => {
   }
   child.on('error', error => onError(error, useShell))
   child.on('exit', (code, signal) => {
+    printResumeHint()
     // Killed by a signal: the shell convention, 128 + the signal number.
     finish(code ?? (signal === null ? 0 : 128 + (osConstants.signals[signal] ?? 1)))
   })

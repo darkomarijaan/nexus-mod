@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.6 (2026-10-12)
+
+- **Resume behind the router:** when a `claude-nexus` session ends, Claude Code's own hint still says `claude --resume <id>` (the name is fixed in Claude Code), and plain `claude` bypasses the router. `claude-nexus` now prints `claude-nexus --resume <id>` under it, for the session that ran.
+
 ## 0.6.5 (2026-10-12)
 
 - **Provider pane:** each profile is one row, `● 1: Use myhub   Test  Edit  Delete`. Its model, masked key, context window and fallback mark are no longer listed; the route line still names the model in use, and **Edit** shows the rest.
