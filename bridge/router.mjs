@@ -6,6 +6,8 @@ import { request as httpsRequest } from 'node:https'
 import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { pipeline } from 'node:stream'
 
+import { createClaudeMode, createUsageTap, isRetryable } from './claude-mode.mjs'
+
 import {
   claudeHeaders,
   hostAllowed,
@@ -136,6 +138,7 @@ export async function startRouter({
     if (typeof secret !== 'string' || secret === '') throw new TypeError('startRouter needs a non-empty token and controlToken')
   }
 
+  const mode = createClaudeMode()
   const state = { route: 'claude', profile: null, usedHub: false, counts: { claude: 0, hub: 0 } }
   const held = new Map()
   const events = []
@@ -214,22 +217,77 @@ export async function startRouter({
     const { req, res, signal } = ctx
     state.counts.claude += 1
     let payload = body
-    if (state.usedHub && body.length > 0 && String(req.headers['content-type'] ?? '').includes('json')) {
-      const parsed = parseBody(body)
-      const safe = withSafeToolIds(parsed)
-      if (safe !== parsed) payload = Buffer.from(JSON.stringify(safe))
+    let parsed = null
+    const inference = isInference(req.method, req.url)
+    if (body.length > 0 && String(req.headers['content-type'] ?? '').includes('json') && (state.usedHub || inference)) {
+      try {
+        parsed = parseBody(body)
+      } catch (error) {
+        // Claude Mode only reads; a body it cannot parse goes on untouched (unless the hub rule below needs it).
+        if (state.usedHub) throw error
+      }
     }
+    if (parsed !== null && state.usedHub) {
+      const safe = withSafeToolIds(parsed)
+      if (safe !== parsed) {
+        parsed = safe
+        payload = Buffer.from(JSON.stringify(safe))
+      }
+    }
+    // Claude Mode: pick the model for a main-thread request. Any failure in it leaves the request as it came.
+    let plan = null
+    if (inference && parsed !== null) {
+      try {
+        plan = mode.plan(parsed, { bytes: body.length })
+      } catch {
+        plan = null
+      }
+    }
+    const candidates = plan === null ? [{ model: null, payload }] : plan.chain.map(model => ({ model, payload: model === parsed.model ? payload : Buffer.from(JSON.stringify({ ...parsed, model })) }))
+    const fallbacks = []
     let upstream
-    try {
-      upstream = await send(`${anthropic}${req.url}`, req.method, claudeHeaders(req.headers), payload, signal)
-    } catch (error) {
-      note(ctx, 'claude', 502, failure(error))
-      if (signal.aborted) return
-      return apiError(res, 502, `api.anthropic.com could not be reached (${error.code ?? 'unknown error'})`)
+    let used
+    for (const [index, candidate] of candidates.entries()) {
+      const next = candidates[index + 1]
+      try {
+        upstream = await send(`${anthropic}${req.url}`, req.method, claudeHeaders(req.headers), candidate.payload, signal)
+      } catch (error) {
+        note(ctx, 'claude', 502, failure(error))
+        if (signal.aborted) return
+        if (next !== undefined) {
+          fallbacks.push({ model: candidate.model, status: 502 })
+          continue
+        }
+        return apiError(res, 502, `api.anthropic.com could not be reached (${error.code ?? 'unknown error'})`)
+      }
+      used = candidate
+      const failed = upstream.statusCode ?? 502
+      // A plan limit is the account's, not the model's: the hold below deals with it. Nothing of this answer has reached Claude Code yet.
+      if (next === undefined || !isRetryable(failed) || planLimit(failed, upstream.headers) !== null) break
+      note(ctx, 'claude', failed)
+      upstream.destroy()
+      fallbacks.push({ model: candidate.model, status: failed })
+    }
+    if (plan !== null) {
+      const first = fallbacks[0]
+      if (plan.escalation !== null) emit({ type: 'mode-escalation', ...plan.escalation })
+      if (first !== undefined) emit({ type: 'mode-fallback', from: first.model, to: used.model, status: first.status })
     }
     if (debug) {
       const unified = Object.entries(upstream.headers).filter(([name]) => name.startsWith('anthropic-ratelimit-unified-'))
       if (unified.length > 0) log(`unified ${upstream.statusCode} ${unified.map(([name, value]) => `${name}=${value}`).join(' ')}`)
+    }
+    if (plan !== null) {
+      const tap = createUsageTap()
+      upstream.on('data', chunk => tap.push(chunk))
+      upstream.on('end', () => {
+        try {
+          mode.record(plan, { model: used.model, status: upstream.statusCode ?? 502, ms: Math.round(performance.now() - ctx.started), usage: tap.result(), fallbacks })
+        } catch {
+          // monitoring never breaks an answer
+        }
+      })
+      if (debug) log(`mode ${plan.mode} ${plan.level ?? '-'} ${plan.tier} ${plan.reasons.join(',')}${fallbacks.length > 0 ? ` fallbacks=${fallbacks.length}` : ''}`)
     }
     const limit = isInference(req.method, req.url) ? planLimit(upstream.statusCode, upstream.headers) : null
     // Nobody is listening for the question: let Claude Code see its 429 straight away.
@@ -269,6 +327,13 @@ export async function startRouter({
     if (req.method === 'GET' && bare === '/__nexus/status') {
       const model = state.route === 'claude' || state.profile === null ? null : hubModel('claude-opus', state.profile.models) ?? null
       return json(res, 200, { route: state.route, model, counts: state.counts, held: [...held.keys()] })
+    }
+    if (bare === '/__nexus/mode') {
+      if (req.method === 'POST') {
+        const problem = mode.configure(input)
+        if (problem !== null) return json(res, 400, { error: problem })
+      } else if (req.method !== 'GET') return json(res, 404, { error: 'not found' })
+      return json(res, 200, mode.snapshot())
     }
     if (req.method === 'POST' && bare === '/__nexus/route') {
       if (input.route === 'claude') {

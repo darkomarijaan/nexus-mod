@@ -196,6 +196,7 @@ From a local folder, first replace its contents with the new release (`git pull`
 | `/enhance-nexus <rough prompt>` | Rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box |
 | `/context-nexus` | Where the context goes before you type, and what could go |
 | `/mcp-nexus` | Switcher for the MCP servers in this project; also `list`, `off <names…>`, `on <names…>`, `off unused`, `on all` |
+| `/automodel-nexus` | Claude Mode model routing in claude-nexus sessions: `auto`, `opus`, `sonnet`, `haiku`, `off`, `recent`, `reset` |
 | `/lean-nexus` | Terse replies and minimal code: `talk off\|lite\|ultra`, `code on\|off`, `off`, `on`, `reset` |
 | `/lean-review-nexus [base]` | Review the changes for over-engineering; edits nothing |
 | `/compress-nexus [file]` | Shorten `CLAUDE.md` (or another memory file) safely, with a backup |
@@ -218,6 +219,20 @@ From a local folder, first replace its contents with the new release (`git pull`
 | `r` | Claude ⇄ hub (once a provider profile exists); in a plain `claude` session it copies the restart command |
 
 Every key also has a command. A mod cannot take a bare `ctrl+z` or a `ctrl+x s` chord in this Claude Code build, so the keys go through the bar.
+
+## Claude Mode
+
+In a `claude-nexus` session on the Claude route, the router picks the model per request. Plain `claude` sessions are untouched.
+
+- **Auto (default):** light questions go to Haiku, everyday coding to Sonnet, deep reasoning and architecture to Opus. Classification is a few regexes over your latest message and counters in the request (no model call). The pick holds for the whole turn so the prompt cache survives.
+- **Escalation** moves a turn one tier up only on measured failures (repeated failing tool calls, long failing multistep work), at most `autoModelMaxEscalations` times. Length and token use never trigger it.
+- **Manual:** `/automodel-nexus opus|sonnet|haiku` forces a model until `auto`; `off` sends requests as Claude Code made them. The pick is remembered across sessions.
+- **Fallback:** a request whose model answers 400/403/404/408/429 (not a plan limit)/5xx is retried before any output reaches Claude Code, on your session's own model, then another tier (three tries at most). Plan limits still go through the quota hold.
+- **HUD badge:** the header shows `mode auto·sonnet` (the tier the last request went to) or `mode opus` when forced; nothing when `off` or in a plain session.
+- **Monitoring:** `/automodel-nexus` shows counts per tier, escalations, fallbacks, tokens and an estimated cost against the session's own model; `recent` lists the last decisions (reason codes only, never prompt text).
+- **Settings:** `autoModel`, `autoModelOpus`, `autoModelSonnet`, `autoModelHaiku` (default `claude-*-5-5`), `autoModelMaxEscalations`, `autoModelPrices` (USD per million tokens, estimates).
+
+Limits: only requests with tools are routed (helper calls are left alone); `/model` is overridden in auto mode; thinking blocks from another model may be dropped by Claude Code's own retry after a mid-turn switch.
 
 ## Provider router setup
 

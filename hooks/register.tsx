@@ -19,6 +19,7 @@ import type {
   NexusVerify,
   NexusWork,
 } from '../types'
+import { type ClaudeModeSnapshot, modeBadge, modePayload, modeRecentText, modeStatusText, parseModeArgs, readModePick } from './claudemode'
 import { type NexusConfig, readConfig } from './config'
 import { comparePage, designPage, isHex, tokensOf } from './design'
 import {
@@ -209,6 +210,7 @@ const routerWatcher = atom({ plugin: 'nexus', key: 'routerWatcher' } as const, 0
 const claudeBackAt = atom({ plugin: 'nexus', key: 'claudeBackAt' } as const, null as number | null)
 // The person's /lean-nexus pick over the settings; $.store keeps it across sessions.
 const leanPick = atom({ plugin: 'nexus', key: 'leanPick' } as const, {} as LeanPick)
+const claudeModeBadge = atom({ plugin: 'nexus', key: 'claudeModeBadge' } as const, null as string | null)
 // The MCP servers the /mcp-nexus pane lists, read when it opens.
 const mcpView = atom({ plugin: 'nexus', key: 'mcpRows' } as const, [] as McpRow[])
 // The subagents of this session for the Agents panel.
@@ -1848,6 +1850,46 @@ async function saveProfiles($: Engine, list: ProviderProfile[]): Promise<void> {
   await update($, provider, now => ({ ...now, profiles: list.map(summarize) }))
 }
 
+// ── Claude Mode: the router's model routing, steered from here ───────────
+
+const CLAUDE_MODE_KEY = 'claudeMode'
+
+/** Gives the router the settings and the person's stored pick (or a new pick). Null when there is no router or it refused. */
+async function pushClaudeMode($: Engine, cfg: NexusConfig, pick?: ReturnType<typeof readModePick>) {
+  const chosen = pick === undefined ? readModePick(await $.store.get(CLAUDE_MODE_KEY).catch(() => null)) : pick
+  const answer = await routerCall($, 'POST', '/__nexus/mode', modePayload({ mode: cfg.autoModel, models: cfg.autoModels, maxEscalations: cfg.autoModelMaxEscalations, prices: cfg.autoModelPrices }, chosen))
+
+  return answer.ok ? (answer.data as unknown as ClaudeModeSnapshot) : { error: String(answer.data.error ?? answer.status) }
+}
+
+/** Keeps the HUD badge in step with the router: read on the HUD's tick, written only when it changes. */
+async function refreshModeBadge($: Engine, snap?: ClaudeModeSnapshot | null): Promise<void> {
+  let fresh = snap
+  if (fresh === undefined) {
+    if ((await read($, routerLink)) === null) fresh = null
+    else {
+      const answer = await routerCall($, 'GET', '/__nexus/mode')
+      fresh = answer.ok ? (answer.data as unknown as ClaudeModeSnapshot) : null
+    }
+  }
+  const badge = modeBadge(fresh)
+  await update($, claudeModeBadge, now => (now === badge ? now : badge))
+}
+
+async function runClaudeMode($: Engine, cfg: NexusConfig, args: string): Promise<string> {
+  const command = parseModeArgs(args)
+  if (command.kind === 'error') return command.message
+  if ((await ensureRouterLink($)) === null) return 'Claude Mode routes through the claude-nexus router; this is a plain claude session. Start it with claude-nexus.'
+  if (command.kind === 'set') await $.store.set(CLAUDE_MODE_KEY, command.mode)
+  if (command.kind === 'reset') await $.store.delete(CLAUDE_MODE_KEY).catch(() => undefined)
+  const pick = command.kind === 'set' ? command.mode : command.kind === 'reset' ? null : undefined
+  const snap = await pushClaudeMode($, cfg, pick)
+  if ('error' in snap) return `The router did not take it: ${snap.error}`
+  await refreshModeBadge($, snap).catch(() => undefined)
+
+  return command.kind === 'recent' ? modeRecentText(snap) : modeStatusText(snap)
+}
+
 const NOT_LINKED =
   'This is a plain claude session, so it stays on Claude. /provider-nexus <name> copies a command that resumes this conversation under claude-nexus, on that profile.'
 
@@ -2321,6 +2363,7 @@ const COMMANDS = [
   { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
   { name: 'agents-nexus', description: 'Nexus: the subagents of this session, live: model, context, tools, last activity', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <names…> | on <names…> | off unused | on all]', immediate: true },
+  { name: 'automodel-nexus', description: 'Nexus: Claude Mode model routing (auto picks Haiku, Sonnet or Opus per request); or force one model', argumentHint: '[auto | opus | sonnet | haiku | off | recent | reset]', immediate: true },
   { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
   { name: 'lean-review-nexus', description: 'Nexus: Claude reviews the uncommitted changes (or those since a base) for over-engineering; edits nothing', argumentHint: '[base]' },
   { name: 'compress-nexus', description: 'Nexus: shorten CLAUDE.md (or another memory file) with the helper model; shows the saving, asks, keeps a backup', argumentHint: '[file]' },
@@ -2384,6 +2427,7 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     `  Quota guard         ${cfg.quotaGuard === 0 ? 'off' : `at ${cfg.quotaGuard}%`}`,
     `  Turn footer         ${on(cfg.turnFooter)}`,
     `  Provider router     /provider-nexus  (sessions started with claude-nexus)`,
+    `  Claude Mode         ${cfg.autoModel}  /automodel-nexus [auto|opus|sonnet|haiku|off|recent|reset]  (claude-nexus sessions)`,
     `  Context audit       /context-nexus   MCP servers per project: /mcp-nexus${mcpOff.length > 0 ? ` (off here: ${mcpOff.join(', ')})` : ''}`,
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
@@ -2463,10 +2507,12 @@ export const register: Register = (on, options) => {
       if (pending === null) void providerStatus($).catch(() => undefined)
       else void useRoute($, pending, { askCompact: false }).then(text => $.ui.toast(text, { timeoutMs: 10_000 })).catch(() => undefined)
       void watchRouter($, cfg, true).catch(() => undefined)
+      void pushClaudeMode($, cfg).then(snap => refreshModeBadge($, 'error' in snap ? null : snap)).catch(() => undefined)
     }
     void refreshHud($, true).catch(() => undefined)
     $.clock.every(4000, () => {
       void refreshHud($).catch(() => undefined)
+      void refreshModeBadge($).catch(() => undefined)
       void watchLongTurn($, cfg).catch(() => undefined)
     })
 
@@ -2530,6 +2576,8 @@ export const register: Register = (on, options) => {
 
     return text === undefined ? {} : { text }
   })
+
+  on('command.run', { command: 'automodel-nexus' }, async ($, e) => ({ text: await runClaudeMode($, cfg, e.args) }))
 
   on('command.run', { command: 'lean-nexus' }, async ($, e) => ({ text: await runLean($, cfg, e.args) }))
 
@@ -3159,7 +3207,7 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [now, t, v, cps, working, list, rate, skin, route, pick, agentList] = await Promise.all([
+    const [now, t, v, cps, working, list, rate, skin, route, pick, agentList, modeTag] = await Promise.all([
       read($, hud),
       read($, turn),
       read($, verify),
@@ -3171,6 +3219,7 @@ export const register: Register = (on, options) => {
       read($, provider),
       read($, leanPick),
       read($, agentRuns),
+      read($, claudeModeBadge),
     ])
     const th = themeOf(skin)
     const ic = th.icons
@@ -3230,6 +3279,7 @@ export const register: Register = (on, options) => {
               now.model !== '' && <Text> · {ic.model} {now.model}</Text>
             )}
             {leanTag !== null ? <Text color={th.idle}>{` · ${leanTag}`}</Text> : null}
+            {modeTag !== null ? <Text color={th.accent}>{` · ${modeTag}`}</Text> : null}
             <Text dimColor> · </Text>
             <Text color={th.ok}>{ic.dot} {counts.working}{isWide ? ' working' : ''} </Text>
             <Text color={th.warn}> {ic.dot} {counts.waiting}{isWide ? ' waiting' : ''} </Text>

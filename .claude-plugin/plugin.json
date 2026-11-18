@@ -195,6 +195,18 @@
       "description": "In a claude-nexus session, when Claude's plan limit is hit: ask which profile to continue on, switch to the default fallback profile at once, or do nothing.",
       "options": ["ask", "auto", "off"],
       "default": "ask"
-    }
+    },
+    "autoModel": {
+      "type": "string",
+      "title": "Claude Mode",
+      "description": "Model routing in claude-nexus sessions on the Claude route. auto: light work goes to Haiku, everyday coding to Sonnet, deep reasoning to Opus. opus/sonnet/haiku: always that model. off: requests go as Claude Code sent them. /automodel-nexus switches it on the fly.",
+      "options": ["auto", "off", "opus", "sonnet", "haiku"],
+      "default": "auto"
+    },
+    "autoModelOpus": { "type": "string", "title": "Claude Mode: Opus model id", "description": "Model id sent for the heavy tier.", "default": "claude-opus-5-5" },
+    "autoModelSonnet": { "type": "string", "title": "Claude Mode: Sonnet model id", "description": "Model id sent for the standard tier.", "default": "claude-sonnet-5-5" },
+    "autoModelHaiku": { "type": "string", "title": "Claude Mode: Haiku model id", "description": "Model id sent for the light tier.", "default": "claude-haiku-5-5" },
+    "autoModelMaxEscalations": { "type": "number", "title": "Claude Mode: max escalations per turn", "description": "How many tiers a turn may move up after measured failures (0 to 2).", "default": 2 },
+    "autoModelPrices": { "type": "string", "title": "Claude Mode: prices", "description": "USD per million tokens as in/out per tier, for the cost estimate. Check your own price list.", "default": "opus=15/75,sonnet=3/15,haiku=1/5" }
   }
 }

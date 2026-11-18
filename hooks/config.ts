@@ -1,5 +1,6 @@
 import type { PluginOptions } from 'claude-code'
 
+import { isClaudeMode, type ClaudeModeName } from './claudemode'
 import { isLeanTalk, type LeanTalk } from './leanmode'
 import { DEFAULT_THEME, isTheme } from './theme'
 
@@ -36,6 +37,10 @@ export type NexusConfig = {
   quotaGuard: number
   turnFooter: boolean
   fallbackMode: 'ask' | 'auto' | 'off'
+  autoModel: ClaudeModeName
+  autoModels: { opus: string; sonnet: string; haiku: string }
+  autoModelMaxEscalations: number
+  autoModelPrices: string
 }
 
 const flag = (value: unknown, fallback: boolean) =>
@@ -52,6 +57,7 @@ export function readConfig(options: PluginOptions): NexusConfig {
   const theme = text(options.theme, DEFAULT_THEME).trim().toLowerCase()
   const fallback = text(options.fallbackMode, 'ask')
   const talk = text(options.leanTalk, 'lite').trim().toLowerCase()
+  const mode = text(options.autoModel, 'auto').trim().toLowerCase()
 
   return {
     shield: flag(options.shield, true),
@@ -87,5 +93,13 @@ export function readConfig(options: PluginOptions): NexusConfig {
     quotaGuard: Math.min(100, Math.floor(count(options.quotaGuard, 90))),
     turnFooter: flag(options.turnFooter, true),
     fallbackMode: fallback === 'auto' || fallback === 'off' ? fallback : 'ask',
+    autoModel: isClaudeMode(mode) ? mode : 'auto',
+    autoModels: {
+      opus: text(options.autoModelOpus, 'claude-opus-5-5').trim() || 'claude-opus-5-5',
+      sonnet: text(options.autoModelSonnet, 'claude-sonnet-5-5').trim() || 'claude-sonnet-5-5',
+      haiku: text(options.autoModelHaiku, 'claude-haiku-5-5').trim() || 'claude-haiku-5-5',
+    },
+    autoModelMaxEscalations: Math.min(2, Math.floor(count(options.autoModelMaxEscalations, 2))),
+    autoModelPrices: text(options.autoModelPrices, 'opus=15/75,sonnet=3/15,haiku=1/5').trim(),
   }
 }

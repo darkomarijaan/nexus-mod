@@ -198,6 +198,8 @@ declare module 'claude-code' {
       routerWatcher: number
       /** When Claude's plan limit resets after a fallback (ms); null: nothing to offer. */
       claudeBackAt: number | null
+      /** The Claude Mode badge the HUD shows (`mode auto·sonnet`); null: routing off, or no router. */
+      claudeModeBadge: string | null
       /** The /lean-nexus pick, remembered across sessions in $.store. */
       leanPick: NexusLeanPick
       /** The MCP servers the /mcp-nexus pane lists, read when it opens. */

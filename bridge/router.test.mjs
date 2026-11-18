@@ -9,6 +9,7 @@ const TOKEN = 't'.repeat(64)
 const CONTROL = 'c'.repeat(64)
 let anthropic, hub, router
 const seen = { anthropic: [], hub: [] }
+var modelStatus = {}
 let anthropicMode = 'ok'
 let hubMode = 'ok'
 let hangClosed = false
@@ -75,7 +76,7 @@ const control = (path, method = 'GET', body) => call({ method, path, headers: { 
 const PROFILE = { hubUrl: '', apiKey: 'hub-key', models: { opus: 'big' }, contextWindow: 128000 }
 
 before(async () => {
-  anthropic = await fake('anthropic', (req, res) => {
+  anthropic = await fake('anthropic', (req, res, body) => {
     if (anthropicMode === 'limit') {
       res.writeHead(429, {
         'content-type': 'application/json',
@@ -84,6 +85,14 @@ before(async () => {
         'anthropic-ratelimit-unified-representative-claim': 'five_hour',
       })
       return res.end('{"type":"error","error":{"type":"rate_limit_error","message":"limit"}}')
+    }
+    if (modelStatus.all !== undefined) {
+      res.writeHead(modelStatus.all, { 'content-type': 'application/json' })
+      return res.end('{"type":"error","error":{"type":"overloaded_error","message":"down"}}')
+    }
+    if (String(body).includes('claude-haiku-bogus')) {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      return res.end('{"type":"error","error":{"type":"not_found_error","message":"model"}}')
     }
     if (anthropicMode === 'truncate') return truncate(res)
     if (anthropicMode === 'hang') return void req.socket.once('close', () => (hangClosed = true))
@@ -572,4 +581,64 @@ test('a request the hub refuses as such (400) is not tried on another model', as
     assert.equal(answer.status, 400)
     assert.deepEqual(hubModels(since), ['big'])
   })
+})
+
+// ── Claude Mode ──────────────────────────────────────────────────────────
+const agent = (text, extra = {}) => {
+  const base = inference()
+
+  return { ...base, body: { model: 'claude-sonnet-5-5', tools: [{ name: 'Bash' }], messages: [{ role: 'user', content: text }], ...extra } }
+}
+const modelSent = () => JSON.parse(seen.anthropic.at(-1).body).model
+const setMode = patch => control('/__nexus/mode', 'POST', patch)
+
+test('claude mode routes by weight in auto mode and leaves tool-less helper calls alone', async () => {
+  anthropicMode = 'ok'
+  await call(agent('apa itu closure?'))
+  assert.equal(modelSent(), 'claude-haiku-5-5')
+  await call(agent('Implement a login endpoint with tests'))
+  assert.equal(modelSent(), 'claude-sonnet-5-5')
+  await call(agent('Rancang arsitektur sistem terdistribusi dan bahas trade-off'))
+  assert.equal(modelSent(), 'claude-opus-5-5')
+  await call(agent('apa itu closure?', { tools: undefined }))
+  assert.equal(modelSent(), 'claude-sonnet-5-5')
+})
+
+test('claude mode: manual override sticks, off passes through, bad settings are refused', async () => {
+  assert.equal((await setMode({ mode: 'opus' })).status, 200)
+  await call(agent('apa itu closure?'))
+  assert.equal(modelSent(), 'claude-opus-5-5')
+  await setMode({ mode: 'off' })
+  await call(agent('apa itu closure?'))
+  assert.equal(modelSent(), 'claude-sonnet-5-5')
+  assert.equal((await setMode({ mode: 'turbo' })).status, 400)
+  assert.equal((await control('/__nexus/mode', 'POST', { models: { opus: 'x y' } })).status, 400)
+  await setMode({ mode: 'auto' })
+})
+
+test('claude mode records usage and cost without prompt text', async () => {
+  await call(agent('rahasia-xyz apa itu closure?'))
+  const snap = JSON.parse((await control('/__nexus/mode')).text)
+  assert.ok(snap.totals.requests >= 3)
+  assert.ok(!JSON.stringify(snap).includes('rahasia'))
+})
+
+test('claude mode: an unknown model id falls back to the session model, once announced', async () => {
+  await setMode({ models: { haiku: 'claude-haiku-bogus' } })
+  await control('/__nexus/events?wait=0')
+  const before = seen.anthropic.length
+  const answer = await call(agent('apa itu closure?'))
+  assert.equal(answer.status, 200)
+  const tried = seen.anthropic.slice(before).map(one => JSON.parse(one.body).model)
+  assert.deepEqual(tried, ['claude-haiku-bogus', 'claude-sonnet-5-5'])
+  const events = JSON.parse((await control('/__nexus/events?wait=0')).text).events
+  assert.ok(events.some(one => one.type === 'mode-fallback' && one.status === 404))
+  await setMode({ models: { haiku: 'claude-haiku-5-5' } })
+})
+
+test('claude mode: when every model fails the last error reaches Claude Code', async () => {
+  modelStatus = { all: 503 }
+  const answer = await call(agent('apa itu closure?'))
+  assert.equal(answer.status, 503)
+  modelStatus = {}
 })
