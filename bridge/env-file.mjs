@@ -2,12 +2,19 @@
 // instead of the shell. They are given to the router and to nothing else: the claude process, and so the tools
 // it runs, never receive them, and nothing here logs a name or a value.
 //
-// Looked in, highest priority first: the file named by NEXUS_ENV_FILE, then .env in the folder claude-nexus was
-// started from, then ~/.claude/nexus/.env. The process environment beats all of them (an empty value does not).
+// Looked in, highest priority first: the file named by NEXUS_ENV_FILE, then ~/.claude/nexus/.env (both the
+// person's own), then .env in the folder claude-nexus was started from. The process environment beats all of
+// them (an empty value does not).
+//
+// The folder's .env may belong to a repo the person does not trust, so it ranks last, and the names that set a
+// security boundary (PROTECTED) are ignored in it: only the person's own sources can say where a key may go.
 import { readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 const MAX_BYTES = 64 * 1024
+
+/** Names an untrusted .env may not set: the hosts the Jev key may go to, and where the person's own file is. */
+export const PROTECTED = ['NEXUS_JEV_HOSTS', 'NEXUS_ENV_FILE']
 
 /** KEY=value lines: optional `export`, one pair of quotes, `#` comments. Nothing is expanded or run. */
 export function parseEnv(text) {
@@ -32,23 +39,26 @@ export function parseEnv(text) {
   return out
 }
 
-/** The files to try, highest priority first. */
+/** The files to try, highest priority first, each with whether it is the person's own (trusted) or the folder's. */
 export function envFileCandidates({ env, cwd, home }) {
   const list = []
-  if (typeof env.NEXUS_ENV_FILE === 'string' && env.NEXUS_ENV_FILE !== '') list.push(resolve(cwd, env.NEXUS_ENV_FILE))
-  list.push(join(cwd, '.env'), join(home, '.claude', 'nexus', '.env'))
+  if (typeof env.NEXUS_ENV_FILE === 'string' && env.NEXUS_ENV_FILE !== '') list.push({ path: resolve(cwd, env.NEXUS_ENV_FILE), trusted: true })
+  list.push({ path: join(home, '.claude', 'nexus', '.env'), trusted: true }, { path: join(cwd, '.env'), trusted: false })
 
   return list
 }
 
 /**
- * Reads the files (highest priority first) into one set of variables. A missing, unreadable, oversized or
- * non-file path is skipped without a word; an empty value is no value. `files` names the ones that gave something.
+ * Reads the files (highest priority first; a bare path counts as trusted) into one set of variables. A missing,
+ * unreadable, oversized or non-file path is skipped without a word; an empty value is no value; an untrusted file
+ * cannot set a PROTECTED name. `files` names the ones that gave something.
  */
-export function loadEnvFiles(paths) {
+export function loadEnvFiles(entries) {
   const vars = {}
   const files = []
-  for (const path of [...paths].reverse()) {
+  for (const entry of [...entries].reverse()) {
+    const path = typeof entry === 'string' ? entry : entry.path
+    const trusted = typeof entry === 'string' ? true : entry.trusted !== false
     let found
     try {
       const info = statSync(path)
@@ -57,7 +67,7 @@ export function loadEnvFiles(paths) {
     } catch {
       continue
     }
-    const filled = Object.entries(found).filter(([, value]) => value !== '')
+    const filled = Object.entries(found).filter(([name, value]) => value !== '' && (trusted || !PROTECTED.includes(name)))
     if (filled.length === 0) continue
     for (const [name, value] of filled) vars[name] = value
     files.push(path)

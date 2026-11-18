@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { envFileCandidates, loadEnvFiles, mergeEnv, parseEnv } from './env-file.mjs'
+import { PROTECTED, envFileCandidates, loadEnvFiles, mergeEnv, parseEnv } from './env-file.mjs'
 
 test('a .env file is read as plain KEY=value lines', () => {
   const text = [
@@ -40,8 +40,8 @@ test('nothing is expanded or executed', () => {
 test('the places looked in, highest priority first', () => {
   const cwd = resolve('/work/project')
   const home = resolve('/home/me')
-  assert.deepEqual(envFileCandidates({ env: {}, cwd, home }), [join(cwd, '.env'), join(home, '.claude', 'nexus', '.env')])
-  assert.deepEqual(envFileCandidates({ env: { NEXUS_ENV_FILE: 'secrets/jev.env' }, cwd, home })[0], resolve(cwd, 'secrets/jev.env'))
+  assert.deepEqual(envFileCandidates({ env: {}, cwd, home }), [{ path: join(home, '.claude', 'nexus', '.env'), trusted: true }, { path: join(cwd, '.env'), trusted: false }])
+  assert.deepEqual(envFileCandidates({ env: { NEXUS_ENV_FILE: 'secrets/jev.env' }, cwd, home })[0], { path: resolve(cwd, 'secrets/jev.env'), trusted: true })
 })
 
 test('files are merged by priority, empty values and missing files are ignored', () => {
@@ -74,4 +74,30 @@ test('the process environment wins over a file, unless its value is empty', () =
   assert.equal(merged.ONLY_FILE, 'f')
   assert.equal(merged.PATH, '/bin')
   assert.equal(mergeEnv({ CMD_API_KEY: 'file' }, { CMD_API_KEY: '' }).CMD_API_KEY, 'file')
+})
+
+test('a repo\'s .env cannot widen where the key goes or move the person\'s own file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nexus-env-'))
+  const repo = join(dir, 'repo.env')
+  writeFileSync(repo, 'NEXUS_JEV_HOSTS=evil.example.com\nNEXUS_ENV_FILE=/tmp/evil.env\nCMD_API_KEY=repo-key\nOTHER=ok\n')
+  const { vars } = loadEnvFiles([{ path: repo, trusted: false }])
+  assert.equal(vars.NEXUS_JEV_HOSTS, undefined)
+  assert.equal(vars.NEXUS_ENV_FILE, undefined)
+  assert.equal(vars.CMD_API_KEY, 'repo-key')
+  assert.equal(vars.OTHER, 'ok')
+  assert.deepEqual(PROTECTED, ['NEXUS_JEV_HOSTS', 'NEXUS_ENV_FILE'])
+  const own = join(dir, 'own.env')
+  writeFileSync(own, 'NEXUS_JEV_HOSTS=my.example.com\n')
+  assert.equal(loadEnvFiles([{ path: own, trusted: true }]).vars.NEXUS_JEV_HOSTS, 'my.example.com')
+})
+
+test('the person\'s own file beats a repo\'s .env, which only fills what is missing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'nexus-env-'))
+  const own = join(dir, 'own.env')
+  const repo = join(dir, 'repo.env')
+  writeFileSync(own, 'CMD_API_KEY=mine\n')
+  writeFileSync(repo, 'CMD_API_KEY=theirs\nTYPESAFE_API_KEY=theirs-too\n')
+  const both = loadEnvFiles([{ path: own, trusted: true }, { path: repo, trusted: false }]).vars
+  assert.equal(both.CMD_API_KEY, 'mine')
+  assert.equal(both.TYPESAFE_API_KEY, 'theirs-too')
 })

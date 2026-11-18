@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 (2026-11-18)
+
+- **A repo's `.env` is no longer trusted like yours:** the `.env` in the folder `claude-nexus` starts from may belong to a repo you did not write. In 0.7.0 and 0.7.1 it could add hosts the Jev key may go to (`NEXUS_JEV_HOSTS`) and outranked `~/.claude/nexus/.env`, so it could also replace your key with its own. Now the order is `NEXUS_ENV_FILE`, then `~/.claude/nexus/.env`, then the folder's `.env` last; the folder's file cannot set `NEXUS_JEV_HOSTS` or `NEXUS_ENV_FILE`, and your own files and the shell always win. It can still supply a key when you have none anywhere else, so keep the key in `~/.claude/nexus/.env` if you open projects you do not trust. If you use Jev, update.
+
 ## 0.7.1 (2026-11-18)
 
 - **Security hardening for the Jev key:** in 0.7.0 the router's control endpoint could name which environment variable the router read for the Jev key and which address it was sent to, so a caller holding the control token could have aimed any variable of the router's environment at any https host. Now the router is given only the variables a Jev key can live in (`CMD_API_KEY`, `TYPESAFE_API_KEY`, `JEV_API_KEY` or a `NEXUS_JEV_*` name), never the rest of the environment, and the key can only be sent to `api.commandcode.ai`, `api.typesafe.ai` or hosts listed in `NEXUS_JEV_HOSTS`. Both lists are fixed when `claude-nexus` starts, so the plugin's settings and the control endpoint cannot widen them. The control token is random and known only to the plugin, so this was hardening, not a remote hole. If you use Jev, update.

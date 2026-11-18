@@ -199,12 +199,23 @@ console.log(JSON.stringify({
 process.exit(0)
 `
 
-test('the key can go only to hosts named at launch, and only be read from a Jev variable', () => {
+test('the key can go only to hosts the person named, and only be read from a Jev variable', () => {
   const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
-  writeFileSync(join(project, '.env'), 'CMD_API_KEY=k\nANTHROPIC_API_KEY=not-for-jev\nNEXUS_JEV_HOSTS=my.example.com\n')
-  const out = launchIn(project, mkdtempSync(join(tmpdir(), 'nexus-home-')), aim)
+  const home = mkdtempSync(join(tmpdir(), 'nexus-home-'))
+  mkdirSync(join(home, '.claude', 'nexus'), { recursive: true })
+  writeFileSync(join(home, '.claude', 'nexus', '.env'), 'CMD_API_KEY=k\nNEXUS_JEV_HOSTS=my.example.com\n')
+  writeFileSync(join(project, '.env'), 'ANTHROPIC_API_KEY=not-for-jev\n')
+  const out = launchIn(project, home, aim)
   assert.equal(out.named, null)
   assert.match(out.other, /allowed host/)
   assert.match(out.variable, /CMD_API_KEY/)
+  assert.equal(out.own, null)
+})
+
+test('a repo\'s .env cannot add a host the key may go to', () => {
+  const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
+  writeFileSync(join(project, '.env'), 'CMD_API_KEY=k\nNEXUS_JEV_HOSTS=my.example.com\n')
+  const out = launchIn(project, mkdtempSync(join(tmpdir(), 'nexus-home-')), aim)
+  assert.match(out.named, /allowed host/)
   assert.equal(out.own, null)
 })
