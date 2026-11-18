@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.7 (2026-11-18)
+
+- **Claude Mode:** in a `claude-nexus` session on the Claude route, the router picks the model per request: light questions to Haiku, everyday coding to Sonnet, deep reasoning to Opus. Escalation moves a turn up only on measured failures; a failed request is retried on another model before any output reaches Claude Code.
+- **`/automodel-nexus`:** `auto`, `opus`, `sonnet`, `haiku`, `off`, `recent` or `reset`; the pick is remembered across sessions. The status shows counts per tier, escalations, fallbacks and an estimated cost.
+- **HUD badge:** the header shows `mode auto·sonnet` (the tier of the last request) or `mode opus` when forced; nothing when off or in a plain session.
+- **Settings:** `autoModel`, `autoModelOpus`, `autoModelSonnet`, `autoModelHaiku`, `autoModelMaxEscalations`, `autoModelPrices`. A value set under an earlier name is not read: set it again.
+
 ## 0.6.6 (2026-10-12)
 
 - **Resume behind the router:** when a `claude-nexus` session ends, Claude Code's own hint still says `claude --resume <id>` (the name is fixed in Claude Code), and plain `claude` bypasses the router. `claude-nexus` now prints `claude-nexus --resume <id>` under it, for the session that ran.
