@@ -204,7 +204,7 @@ function routerEnv(on: On, events: unknown[][] = []) {
     return { value: undefined }
   })
   const calls: { url: string; method: string; headers: Record<string, string>; body: unknown }[] = []
-  const net = { isDown: false, routeStatus: 200, failKey: null as string | null, lost: new Set<string>(), statusRoute: 'claude', statusModel: null as string | null }
+  const net = { isDown: false, routeStatus: 200, failKey: null as string | null, lost: new Set<string>(), statusRoute: 'claude', statusModel: null as string | null, modeSnapshot: false, jevMode: 'off' }
   on('http.fetch', (_, e) => {
     const body = e.init?.body === undefined ? undefined : JSON.parse(e.init.body)
     calls.push({ url: e.url, method: e.init?.method ?? 'GET', headers: e.init?.headers ?? {}, body })
@@ -217,6 +217,19 @@ function routerEnv(on: On, events: unknown[][] = []) {
       const batch = events.shift()
       if (batch === undefined) return { value: { status: 503, ok: false, headers: {}, text: '' } }
       return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ events: batch }) } }
+    }
+    // Auto Model's endpoint, when a test asks for a snapshot that echoes the Jev mode it was last given.
+    if (e.url.endsWith('/__nexus/mode') && net.modeSnapshot) {
+      const jev = (body as { jev?: { mode?: string } } | undefined)?.jev
+      if (e.init?.method === 'POST' && jev?.mode !== undefined) net.jevMode = jev.mode
+      const snap = {
+        mode: 'auto',
+        models: { opus: 'o', sonnet: 's', haiku: 'h' },
+        totals: { requests: 0, fallbacks: 0, escalations: 0, tokensIn: 0, tokensOut: 0, cost: 0, baseline: 0, byTier: {} },
+        recent: [],
+        jev: { mode: net.jevMode, model: 'typesafe/jev-1.14.0', keyEnv: 'CMD_API_KEY', keyPresent: true, paused: false, authFailed: false, calls: 0, used: 0, lowConf: 0, timeouts: 0, errors: 0, skipped: 0, tokensIn: 0, tokensOut: 0 },
+      }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(snap) } }
     }
     const data = e.url.endsWith('/__nexus/status') ? { route: net.statusRoute, model: net.statusModel, counts: { claude: 0, hub: 0 }, held: [] } : { ok: true }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(data) } }
@@ -1264,5 +1277,71 @@ describe('the router watcher and held requests', () => {
     await clock.advance(30_000)
     await settled(calls, clock)
     expect(decisions(calls)).toEqual([{ id: 'h1', action: 'release' }])
+  })
+})
+
+
+describe('/automodel-nexus jev', () => {
+  /** The pushes to the router's mode endpoint, newest last. */
+  const pushes = (calls: { url: string; method: string; body: unknown }[]) =>
+    calls.filter(one => one.url.endsWith('/__nexus/mode') && one.method === 'POST').map(one => (one.body as { jev?: { mode?: string } }).jev?.mode)
+
+  test('a pick is sent to the router, kept across sessions, and reset follows the setting again', { options: { ...BASE_OPTIONS, autoModelJev: 'gray' } }, async ($, on) => {
+    mock.store(on)
+    const { calls, net, clock } = routerEnv(on)
+    net.modeSnapshot = true
+    await $.session.start?.(START as never)
+    await clock.settle()
+    expect(pushes(calls).at(-1)).toBe('gray')
+    const off = await $.command.run({ command: 'automodel-nexus', args: 'jev off' } as never)
+    expect(off.text).toContain('Jev off')
+    expect(pushes(calls).at(-1)).toBe('off')
+    // A new session pushes the stored pick, not the setting.
+    await $.session.start?.(START as never)
+    await clock.settle()
+    expect(pushes(calls).at(-1)).toBe('off')
+    const reset = await $.command.run({ command: 'automodel-nexus', args: 'jev reset' } as never)
+    expect(reset.text).toContain('follows the plugin setting')
+    expect(pushes(calls).at(-1)).toBe('gray')
+  })
+
+  test('with the setting off, jev gray turns it on and says so', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    const { calls, net, clock } = routerEnv(on)
+    net.modeSnapshot = true
+    await $.session.start?.(START as never)
+    await clock.settle()
+    expect(pushes(calls).at(-1)).toBe('off')
+    const answer = await $.command.run({ command: 'automodel-nexus', args: 'jev gray' } as never)
+    expect(answer.text).toContain('Jev on')
+    expect(answer.text).toContain('Jev: typesafe/jev-1.14.0, gray zone only')
+    expect(pushes(calls).at(-1)).toBe('gray')
+    const status = await $.command.run({ command: 'nexus', args: '' } as never)
+    expect(status.text).toContain('+ Jev')
+  })
+
+  test('jev always is sent, says what it costs, and shows in the status', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    const { calls, net, clock } = routerEnv(on)
+    net.modeSnapshot = true
+    await $.session.start?.(START as never)
+    await clock.settle()
+    const answer = await $.command.run({ command: 'automodel-nexus', args: 'jev always' } as never)
+    expect(answer.text).toContain('Jev on for every turn')
+    expect(answer.text).toContain('every turn waits')
+    expect(pushes(calls).at(-1)).toBe('always')
+    expect((await $.command.run({ command: 'nexus', args: '' } as never)).text).toContain('+ Jev')
+  })
+
+  test('a bad word is refused without touching the router', { options: BASE_OPTIONS }, async ($, on) => {
+    mock.store(on)
+    const { calls, net, clock } = routerEnv(on)
+    net.modeSnapshot = true
+    await $.session.start?.(START as never)
+    await clock.settle()
+    const before = pushes(calls).length
+    const bad = await $.command.run({ command: 'automodel-nexus', args: 'jev maybe' } as never)
+    expect(bad.text).toContain('Unknown Jev argument')
+    expect(pushes(calls).length).toBe(before)
   })
 })

@@ -1,6 +1,6 @@
 {
   "name": "nexus",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "author": {
     "name": "eko"
   },
@@ -207,7 +207,7 @@
     "autoModelSonnet": { "type": "string", "title": "Auto Model: Sonnet model id", "description": "Model id sent for the standard tier.", "default": "claude-sonnet-5-5" },
     "autoModelHaiku": { "type": "string", "title": "Auto Model: Haiku model id", "description": "Model id sent for the light tier.", "default": "claude-haiku-5-5" },
     "autoModelMaxEscalations": { "type": "number", "title": "Auto Model: max escalations per turn", "description": "How many tiers a turn may move up after measured failures (0 to 2).", "default": 2 },
-    "autoModelJev": { "type": "string", "title": "Auto Model: Jev classifier (optional)", "description": "Optional. gray: when the built-in rules are unsure, ask Jev (TypeSafe) to judge how much reasoning your message needs. Only the message you typed is sent, never tool output or files, and never one that looks like it holds a key. Needs an account and a key in the environment variable named below; without a key, or on any failure, the rules decide as usual. off (default): never used.", "options": ["off", "gray"], "default": "off" },
+    "autoModelJev": { "type": "string", "title": "Auto Model: Jev classifier (optional)", "description": "Optional. gray: when the built-in rules are unsure, ask Jev (TypeSafe) to judge how much reasoning your message needs. Only the message you typed is sent, never tool output or files, and never one that looks like it holds a key. Needs an account and a key in the environment variable named below; without a key, or on any failure, the rules decide as usual. always: ask on every turn, so each message you type is sent and every turn waits for the answer. off (default): never used.", "options": ["off", "gray", "always"], "default": "off" },
     "autoModelJevUrl": { "type": "string", "title": "Auto Model: Jev address", "description": "https address of the service that takes the Jev request. Its host must be api.commandcode.ai, api.typesafe.ai or one listed in NEXUS_JEV_HOSTS, which is set where claude-nexus starts, not here.", "default": "https://api.commandcode.ai/provider/v1/systemone" },
     "autoModelJevKeyEnv": { "type": "string", "title": "Auto Model: Jev key variable", "description": "Name of the variable that holds the key, read by claude-nexus when it starts, from the shell or from a .env file (see the README). Only CMD_API_KEY, TYPESAFE_API_KEY, JEV_API_KEY or a NEXUS_JEV_ name is accepted. The key itself is never a setting.", "default": "CMD_API_KEY" },
     "autoModelJevModel": { "type": "string", "title": "Auto Model: Jev model id", "description": "Model id sent to the service.", "default": "typesafe/jev-1.14.0" },

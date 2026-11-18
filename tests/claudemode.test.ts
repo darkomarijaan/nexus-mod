@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { readConfig } from '../hooks/config'
-import { DEFAULT_JEV, modeBadge, modePayload, modeRecentText, modeStatusText, parseModeArgs, readModePick, type ClaudeModeSnapshot } from '../hooks/claudemode'
+import { DEFAULT_JEV, modeBadge, modePayload, modeRecentText, modeStatusText, parseModeArgs, readJevPick, readModePick, type ClaudeModeSnapshot } from '../hooks/claudemode'
 
 describe('claude mode', () => {
   test('arguments', () => {
@@ -118,4 +118,42 @@ describe('auto model with the optional Jev classifier', () => {
     expect(modeStatusText(snapshot({ ...live, mode: 'off', problem: 'jev url must be an https address on an allowed host' }))).toContain('Jev: a setting was refused (jev url must be an https address on an allowed host)')
     expect(modeStatusText(snapshot({ ...live, problem: null }))).not.toContain('refused')
   })
+
+  test('/automodel-nexus jev: gray, off and reset, with the mode words left as they were', () => {
+    expect(parseModeArgs('jev gray')).toEqual({ kind: 'jev', value: 'gray' })
+    expect(parseModeArgs('  JEV   On ')).toEqual({ kind: 'jev', value: 'gray' })
+    expect(parseModeArgs('jev off')).toEqual({ kind: 'jev', value: 'off' })
+    expect(parseModeArgs('jev reset')).toEqual({ kind: 'jev', value: 'reset' })
+    expect(parseModeArgs('jev')).toEqual({ kind: 'status' })
+    expect(parseModeArgs('jev status')).toEqual({ kind: 'status' })
+    expect(parseModeArgs('jev maybe').kind).toBe('error')
+    expect(parseModeArgs('off')).toEqual({ kind: 'set', mode: 'off' })
+    expect(parseModeArgs('reset')).toEqual({ kind: 'reset' })
+  })
+
+  test('a stored Jev pick beats the setting, and junk is no pick', () => {
+    expect(readJevPick('gray')).toBe('gray')
+    expect(readJevPick('off')).toBe('off')
+    expect(readJevPick('auto')).toBeNull()
+    expect(readJevPick({})).toBeNull()
+    const base = { mode: 'auto' as const, models: { opus: 'o', sonnet: 's', haiku: 'h' }, maxEscalations: 2, prices: '' }
+    const on = { ...DEFAULT_JEV, mode: 'gray' as const }
+    expect(modePayload({ ...base, jev: DEFAULT_JEV }, null, 'gray')).toMatchObject({ jev: { mode: 'gray', url: DEFAULT_JEV.url } })
+    expect(modePayload({ ...base, jev: on }, null, 'off')).toMatchObject({ jev: { mode: 'off' } })
+    expect(modePayload({ ...base, jev: on }, null, null)).toMatchObject({ jev: { mode: 'gray' } })
+    expect(modePayload({ ...base, jev: on }, null)).toMatchObject({ jev: { mode: 'gray' } })
+    expect('jev' in modePayload(base, null, 'gray')).toBe(false)
+  })
+
+  test('always: parsed, picked, set and shown as every turn', () => {
+    expect(parseModeArgs('jev always')).toEqual({ kind: 'jev', value: 'always' })
+    expect(readJevPick('always')).toBe('always')
+    expect(readConfig({ autoModelJev: 'ALWAYS' }).autoJev.mode).toBe('always')
+    expect(readConfig({ autoModelJev: 'sometimes' }).autoJev.mode).toBe('off')
+    const base = { mode: 'auto' as const, models: { opus: 'o', sonnet: 's', haiku: 'h' }, maxEscalations: 2, prices: '' }
+    expect(modePayload({ ...base, jev: DEFAULT_JEV }, null, 'always')).toMatchObject({ jev: { mode: 'always' } })
+    const live = { mode: 'always', model: 'typesafe/jev-1.14.0', keyEnv: 'CMD_API_KEY', keyPresent: true, paused: false, authFailed: false, calls: 9, used: 8, lowConf: 1, timeouts: 0, errors: 0, skipped: 0, tokensIn: 3000, tokensOut: 300 }
+    const text = modeStatusText({ mode: 'auto', models: { opus: 'o', sonnet: 's', haiku: 'h' }, totals: { requests: 0, fallbacks: 0, escalations: 0, tokensIn: 0, tokensOut: 0, cost: 0, baseline: 0, byTier: {} }, recent: [], jev: live })
+    expect(text).toContain('Jev: typesafe/jev-1.14.0, every turn; asked 9, used 8')
+    expect(text).not.toContain('gray zone only')  })
 })

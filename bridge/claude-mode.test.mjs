@@ -364,3 +364,60 @@ test('a router given no Jev settings still works, and the snapshot never holds a
   await decide(busy, GRAY, { fetch: fakeFetch(answer('HEAVY')), key: 'k-secret' })
   assert.ok(!JSON.stringify(busy.snapshot({ keyPresent: true })).includes('k-secret'))
 })
+
+
+// ── Jev on every turn ────────────────────────────────────────────────────
+const alwaysMode = (extra = {}, options = {}) => {
+  const mode = createClaudeMode(options)
+  assert.equal(mode.configure({ jev: { mode: 'always', ...extra } }), null)
+
+  return mode
+}
+
+test('always: every turn is asked, clear cases too, and a confident answer decides', async () => {
+  const fetch = fakeFetch(answer('MEDIUM'))
+  const mode = alwaysMode()
+  const light = await decide(mode, 'apa itu closure?', { fetch })
+  assert.equal(fetch.calls.length, 1)
+  assert.equal(light.tier, 'sonnet')
+  assert.ok(light.reasons.includes('jev:MEDIUM@0.90'))
+  const up = await decide(mode, 'Rancang arsitektur microservice untuk sistem pembayaran dan bahas trade-off-nya', { fetch: fakeFetch(answer('HEAVY')) })
+  assert.equal(up.tier, 'opus')
+  assert.equal(mode.snapshot().jev.mode, 'always')
+  assert.equal(mode.snapshot().jev.calls, 2)
+})
+
+test('always: Jev never lowers the rules by more than one level', async () => {
+  const mode = alwaysMode()
+  const plan = await decide(mode, 'Rancang arsitektur microservice untuk sistem pembayaran dan bahas trade-off-nya', { fetch: fakeFetch(answer('LIGHT', 0.95, 0.95)) })
+  assert.equal(plan.level, 'MEDIUM')
+  assert.equal(plan.tier, 'sonnet')
+  assert.ok(plan.reasons.includes('step-floor'))
+  const down = await decide(mode, 'apa itu closure lagi?', { fetch: fakeFetch(answer('LIGHT', 0.95, 0.95)) })
+  assert.equal(down.tier, 'haiku')
+  assert.ok(!down.reasons.includes('step-floor'))
+})
+
+test('always: one question per turn, and the same safeguards as the gray zone', async () => {
+  const fetch = fakeFetch(answer('MEDIUM'))
+  const mode = alwaysMode()
+  const body = ask('apa itu closure?')
+  const hint = await mode.consult(body, { key: 'k', fetch })
+  mode.plan(body, { hint })
+  assert.equal(await mode.consult(body, { key: 'k', fetch }), null)
+  assert.equal(fetch.calls.length, 1)
+  assert.equal(await alwaysMode().consult(ask('apa itu closure?'), { key: undefined, fetch }), null)
+  assert.equal(await alwaysMode().consult(ask('apa itu closure? sk-abcdefghijklmnop1234'), { key: 'k', fetch }).then(one => one.kind), 'secret')
+  const manual = alwaysMode()
+  manual.configure({ mode: 'haiku' })
+  assert.equal(await manual.consult(ask('apa itu closure?'), { key: 'k', fetch }), null)
+  assert.equal(fetch.calls.length, 1)
+})
+
+test('always can be set and is refused for a word that is not a mode', () => {
+  const mode = createClaudeMode()
+  assert.equal(mode.configure({ jev: { mode: 'always' } }), null)
+  assert.equal(mode.snapshot().jev.mode, 'always')
+  assert.match(mode.configure({ jev: { mode: 'sometimes' } }) ?? '', /off, gray or always/)
+  assert.equal(mode.snapshot().jev.mode, 'always')
+})

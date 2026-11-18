@@ -187,6 +187,7 @@ export function classify(turn, { bytes = 0 } = {}) {
 }
 
 const TIER_OF_LEVEL = { LIGHT: 'haiku', MEDIUM: 'sonnet', HEAVY: 'opus' }
+const LEVELS = ['LIGHT', 'MEDIUM', 'HEAVY']
 
 /** The measured reason to move a turn one tier up, or null. Never length or token count. */
 export function escalationReason(tier, turn) {
@@ -311,7 +312,7 @@ export function createClaudeMode({ now = () => Date.now(), jevHosts = JEV_DEFAUL
       if (given === null || typeof given !== 'object') return 'jev settings must be an object'
       const jev = { ...state.jev }
       if (given.mode !== undefined) {
-        if (given.mode !== 'off' && given.mode !== 'gray') return 'jev mode must be off or gray'
+        if (given.mode !== 'off' && given.mode !== 'gray' && given.mode !== 'always') return 'jev mode must be off, gray or always'
         jev.mode = given.mode
       }
       if (given.url !== undefined) {
@@ -397,20 +398,23 @@ export function createClaudeMode({ now = () => Date.now(), jevHosts = JEV_DEFAUL
   let pending = null
 
   /**
-   * Asks the optional classifier about a turn the rules left in the gray zone (score 0 to 4). Null, with no
-   * network call, whenever it is not wanted: setting off, no key, not auto mode, a turn already decided, a clear
+   * Asks the optional classifier about a turn: in gray mode one the rules left in the middle (score 0 to 4), in
+   * always mode every one. Null, with no network call, whenever it is not wanted: setting off, no key, not auto mode, a turn already decided, a clear
    * case, paused or rejected. Otherwise { ok: true, level, confidence, probability } or { ok: false, kind }.
    * The key is used for the call and kept nowhere.
    */
   async function consult(body, { bytes = 0, key, fetch = globalThis.fetch } = {}) {
-    if (state.jev.mode !== 'gray' || state.mode !== 'auto') return null
+    if (state.jev.mode === 'off' || state.mode !== 'auto') return null
     if (typeof key !== 'string' || key === '' || typeof fetch !== 'function') return null
     if (body === null || typeof body !== 'object' || !Array.isArray(body.tools) || body.tools.length === 0) return null
     const turn = readTurn(body.messages)
     if (turn === null) return null
     if (state.turn !== null && state.turn.key === turn.key) return null
-    const { score } = classify(turn, { bytes })
-    if (score < 0 || score > 4) return null
+    // gray: only a turn the rules left in the middle (score 0 to 4); always: every turn.
+    if (state.jev.mode === 'gray') {
+      const { score } = classify(turn, { bytes })
+      if (score < 0 || score > 4) return null
+    }
     const stats = state.jevStats
     if (stats.authFailed || now() < stats.pausedUntil) return null
     if (pending !== null && pending.key === turn.key) return pending.promise
@@ -462,6 +466,13 @@ export function createClaudeMode({ now = () => Date.now(), jevHosts = JEV_DEFAUL
     state.jevStats.used += 1
     let { level } = hint
     const reasons = [...found.reasons, `jev:${level}@${hint.probability.toFixed(2)}`]
+    // On every turn Jev may see a clear case differently, but never takes the rules down by more than one level.
+    const rank = LEVELS.indexOf(level)
+    const floor = LEVELS.indexOf(found.level) - 1
+    if (state.jev.mode === 'always' && rank < floor) {
+      level = LEVELS[floor]
+      reasons.push('step-floor')
+    }
     if (level === 'LIGHT' && found.reasons.includes('risk')) {
       level = 'MEDIUM'
       reasons.push('risk-floor')

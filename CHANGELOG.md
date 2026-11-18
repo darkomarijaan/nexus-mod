@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3 (2026-11-18)
+
+- **`/automodel-nexus jev gray|always|off|reset`:** turn the optional Jev classifier on or off from inside the session, without editing a settings file. The pick is remembered across sessions and beats the plugin setting until `jev reset`. It only decides whether Jev is used: the key and the hosts it may go to are still never set from here.
+- **`jev always` (and `autoModelJev: always`):** ask Jev on every turn, not only when the rules are unsure. It sends every message you type (still never one that looks like a key) and every turn waits for the answer, a second or so at most, so it is a choice, not the default. Jev may see a clear case differently, but never lowers the rules' level by more than one step (reason code `step-floor`).
+- The `/nexus` status and the command's own answer follow your pick, and say what each setting costs.
+
 ## 0.7.2 (2026-11-18)
 
 - **A repo's `.env` is no longer trusted like yours:** the `.env` in the folder `claude-nexus` starts from may belong to a repo you did not write. In 0.7.0 and 0.7.1 it could add hosts the Jev key may go to (`NEXUS_JEV_HOSTS`) and outranked `~/.claude/nexus/.env`, so it could also replace your key with its own. Now the order is `NEXUS_ENV_FILE`, then `~/.claude/nexus/.env`, then the folder's `.env` last; the folder's file cannot set `NEXUS_JEV_HOSTS` or `NEXUS_ENV_FILE`, and your own files and the shell always win. It can still supply a key when you have none anywhere else, so keep the key in `~/.claude/nexus/.env` if you open projects you do not trust. If you use Jev, update.

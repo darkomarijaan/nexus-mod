@@ -14,7 +14,7 @@ export const isClaudeMode = (value: unknown): value is ClaudeModeName => typeof 
 export const readModePick = (stored: unknown): ClaudeModeName | null => (isClaudeMode(stored) ? stored : null)
 
 /** The optional Jev classifier. Off unless the person turns it on; the key is never a setting, only the name of its variable. */
-export type JevSettings = { mode: 'off' | 'gray'; url: string; keyEnv: string; model: string; timeoutMs: number; minConfidence: number }
+export type JevSettings = { mode: 'off' | 'gray' | 'always'; url: string; keyEnv: string; model: string; timeoutMs: number; minConfidence: number }
 
 export const DEFAULT_JEV: JevSettings = {
   mode: 'off',
@@ -34,6 +34,7 @@ const JEV_MODEL = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/
 
 export function readJev(raw: { mode?: unknown; url?: unknown; keyEnv?: unknown; model?: unknown; timeoutMs?: unknown; minConfidence?: unknown }): JevSettings {
   const word = (value: unknown, fallback: string) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
+  const jevMode = word(raw.mode, 'off').toLowerCase()
   const url = word(raw.url, DEFAULT_JEV.url)
   const keyEnv = word(raw.keyEnv, DEFAULT_JEV.keyEnv)
   const model = word(raw.model, DEFAULT_JEV.model)
@@ -41,7 +42,7 @@ export function readJev(raw: { mode?: unknown; url?: unknown; keyEnv?: unknown; 
   const confidence = typeof raw.minConfidence === 'number' && raw.minConfidence >= 0 && raw.minConfidence <= 1 ? raw.minConfidence : DEFAULT_JEV.minConfidence
 
   return {
-    mode: word(raw.mode, 'off').toLowerCase() === 'gray' ? 'gray' : 'off',
+    mode: jevMode === 'gray' || jevMode === 'always' ? jevMode : 'off',
     url: JEV_URL.test(url) ? url : DEFAULT_JEV.url,
     keyEnv: JEV_KEY_ENV.test(keyEnv) ? keyEnv : DEFAULT_JEV.keyEnv,
     model: JEV_MODEL.test(model) ? model : DEFAULT_JEV.model,
@@ -50,16 +51,34 @@ export function readJev(raw: { mode?: unknown; url?: unknown; keyEnv?: unknown; 
   }
 }
 
-export type ClaudeModeCommand = { kind: 'status' } | { kind: 'recent' } | { kind: 'set'; mode: ClaudeModeName } | { kind: 'reset' } | { kind: 'error'; message: string }
+/** The person's stored Jev pick (`/automodel-nexus jev gray|off`); anything else is no pick and the setting decides. */
+export const readJevPick = (stored: unknown): 'gray' | 'always' | 'off' | null => (stored === 'gray' || stored === 'always' || stored === 'off' ? stored : null)
+
+export type ClaudeModeCommand =
+  | { kind: 'status' }
+  | { kind: 'recent' }
+  | { kind: 'set'; mode: ClaudeModeName }
+  | { kind: 'reset' }
+  | { kind: 'jev'; value: 'gray' | 'always' | 'off' | 'reset' }
+  | { kind: 'error'; message: string }
 
 export function parseModeArgs(args: string): ClaudeModeCommand {
   const word = args.trim().toLowerCase()
   if (word === '' || word === 'status') return { kind: 'status' }
   if (word === 'recent' || word === 'log') return { kind: 'recent' }
   if (word === 'reset') return { kind: 'reset' }
+  const [first, second] = word.split(/\s+/)
+  if (first === 'jev') {
+    if (second === undefined || second === 'status') return { kind: 'status' }
+    if (second === 'gray' || second === 'on') return { kind: 'jev', value: 'gray' }
+    if (second === 'always') return { kind: 'jev', value: 'always' }
+    if (second === 'off' || second === 'reset') return { kind: 'jev', value: second }
+
+    return { kind: 'error', message: `Unknown Jev argument "${second.slice(0, 20)}". Use: jev gray | jev always | jev off | jev reset` }
+  }
   if (isClaudeMode(word)) return { kind: 'set', mode: word }
 
-  return { kind: 'error', message: `Unknown argument "${args.trim().slice(0, 40)}". Use: auto | opus | sonnet | haiku | off | recent | reset` }
+  return { kind: 'error', message: `Unknown argument "${args.trim().slice(0, 40)}". Use: auto | opus | sonnet | haiku | off | recent | reset | jev gray|always|off|reset` }
 }
 
 export type ClaudeModeSettings = {
@@ -72,13 +91,14 @@ export type ClaudeModeSettings = {
 }
 
 /** What the router is given: the person's pick beats the settings' mode. */
-export function modePayload(settings: ClaudeModeSettings, pick: ClaudeModeName | null) {
+export function modePayload(settings: ClaudeModeSettings, pick: ClaudeModeName | null, jevPick: 'gray' | 'always' | 'off' | null = null) {
   return {
     mode: pick ?? settings.mode,
     models: settings.models,
     maxEscalations: Math.min(2, Math.max(0, Math.floor(settings.maxEscalations))),
     ...(settings.prices.trim() === '' ? {} : { prices: settings.prices.trim() }),
-    ...(settings.jev === undefined ? {} : { jev: settings.jev }),
+    // The person's pick (`/automodel-nexus jev`) beats the setting, as the mode pick does.
+    ...(settings.jev === undefined ? {} : { jev: { ...settings.jev, mode: jevPick ?? settings.jev.mode } }),
   }
 }
 
@@ -155,13 +175,13 @@ export function modeStatusText(snap: ClaudeModeSnapshot): string {
   const { jev } = snap
   // With Jev off (the default) there is nothing to say about it, unless the router refused a setting.
   if (jev !== undefined && typeof jev.problem === 'string') lines.push(`  Jev: a setting was refused (${jev.problem}); the last good one stays`)
-  if (jev !== undefined && jev.mode === 'gray') {
+  if (jev !== undefined && (jev.mode === 'gray' || jev.mode === 'always')) {
     if (jev.authFailed) lines.push('  Jev: the key was rejected, using the rules (/automodel-nexus reset tries again)')
     else if (!jev.keyPresent) lines.push(`  Jev: on, but no key in ${jev.keyEnv}; using the rules`)
     else if (jev.paused) lines.push('  Jev: paused after repeated failures; using the rules for a few minutes')
-    else lines.push(`  Jev: ${jev.model}, gray zone only; asked ${jev.calls}, used ${jev.used}, low confidence ${jev.lowConf}, timeouts ${jev.timeouts}, errors ${jev.errors}, skipped ${jev.skipped}; tokens in ${jev.tokensIn} out ${jev.tokensOut}`)
+    else lines.push(`  Jev: ${jev.model}, ${jev.mode === 'always' ? 'every turn' : 'gray zone only'}; asked ${jev.calls}, used ${jev.used}, low confidence ${jev.lowConf}, timeouts ${jev.timeouts}, errors ${jev.errors}, skipped ${jev.skipped}; tokens in ${jev.tokensIn} out ${jev.tokensOut}`)
   }
-  lines.push('  /automodel-nexus auto | opus | sonnet | haiku | off | recent | reset')
+  lines.push('  /automodel-nexus auto | opus | sonnet | haiku | off | recent | reset | jev gray|always|off|reset')
 
   return lines.join('\n')
 }

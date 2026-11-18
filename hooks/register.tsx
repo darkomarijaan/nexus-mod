@@ -19,7 +19,7 @@ import type {
   NexusVerify,
   NexusWork,
 } from '../types'
-import { type ClaudeModeSnapshot, modeBadge, modePayload, modeRecentText, modeStatusText, parseModeArgs, readModePick } from './claudemode'
+import { type ClaudeModeSnapshot, modeBadge, modePayload, modeRecentText, modeStatusText, parseModeArgs, readJevPick, readModePick } from './claudemode'
 import { type NexusConfig, readConfig } from './config'
 import { comparePage, designPage, isHex, tokensOf } from './design'
 import {
@@ -1853,11 +1853,14 @@ async function saveProfiles($: Engine, list: ProviderProfile[]): Promise<void> {
 // ── Auto Model: the router's model routing, steered from here ───────────
 
 const CLAUDE_MODE_KEY = 'claudeMode'
+/** The person's `/automodel-nexus jev gray|off` pick, kept across sessions like the mode pick. */
+const JEV_PICK_KEY = 'autoModelJev'
 
 /** Gives the router the settings and the person's stored pick (or a new pick). Null when there is no router or it refused. */
-async function pushClaudeMode($: Engine, cfg: NexusConfig, pick?: ReturnType<typeof readModePick>) {
+async function pushClaudeMode($: Engine, cfg: NexusConfig, pick?: ReturnType<typeof readModePick>, jevPick?: ReturnType<typeof readJevPick>) {
   const chosen = pick === undefined ? readModePick(await $.store.get(CLAUDE_MODE_KEY).catch(() => null)) : pick
-  const answer = await routerCall($, 'POST', '/__nexus/mode', modePayload({ mode: cfg.autoModel, models: cfg.autoModels, maxEscalations: cfg.autoModelMaxEscalations, prices: cfg.autoModelPrices, jev: cfg.autoJev }, chosen))
+  const jevChosen = jevPick === undefined ? readJevPick(await $.store.get(JEV_PICK_KEY).catch(() => null)) : jevPick
+  const answer = await routerCall($, 'POST', '/__nexus/mode', modePayload({ mode: cfg.autoModel, models: cfg.autoModels, maxEscalations: cfg.autoModelMaxEscalations, prices: cfg.autoModelPrices, jev: cfg.autoJev }, chosen, jevChosen))
 
   return answer.ok ? (answer.data as unknown as ClaudeModeSnapshot) : { error: String(answer.data.error ?? answer.status) }
 }
@@ -1876,16 +1879,28 @@ async function refreshModeBadge($: Engine, snap?: ClaudeModeSnapshot | null): Pr
   await update($, claudeModeBadge, now => (now === badge ? now : badge))
 }
 
+const JEV_SAID = {
+  gray: 'Jev on: the rules decide, and ask Jev when they are unsure. Only the message you typed is sent, never one that looks like a key (see the README).',
+  always: 'Jev on for every turn: each message you type (never one that looks like a key) goes to the Jev service, and every turn waits for its answer, a second or so at most. `jev gray` asks only when the rules are unsure.',
+  off: 'Jev off: the rules decide.',
+  reset: 'Jev follows the plugin setting again.',
+} as const
+
 async function runClaudeMode($: Engine, cfg: NexusConfig, args: string): Promise<string> {
   const command = parseModeArgs(args)
   if (command.kind === 'error') return command.message
   if ((await ensureRouterLink($)) === null) return 'Auto Model routes through the claude-nexus router; this is a plain claude session. Start it with claude-nexus.'
   if (command.kind === 'set') await $.store.set(CLAUDE_MODE_KEY, command.mode)
   if (command.kind === 'reset') await $.store.delete(CLAUDE_MODE_KEY).catch(() => undefined)
+  if (command.kind === 'jev' && command.value !== 'reset') await $.store.set(JEV_PICK_KEY, command.value)
+  if (command.kind === 'jev' && command.value === 'reset') await $.store.delete(JEV_PICK_KEY).catch(() => undefined)
   const pick = command.kind === 'set' ? command.mode : command.kind === 'reset' ? null : undefined
-  const snap = await pushClaudeMode($, cfg, pick)
+  const jevPick = command.kind === 'jev' ? (command.value === 'reset' ? null : command.value) : undefined
+  const snap = await pushClaudeMode($, cfg, pick, jevPick)
   if ('error' in snap) return `The router did not take it: ${snap.error}`
   await refreshModeBadge($, snap).catch(() => undefined)
+
+  if (command.kind === 'jev') return `${JEV_SAID[command.value]}\n${modeStatusText(snap)}`
 
   return command.kind === 'recent' ? modeRecentText(snap) : modeStatusText(snap)
 }
@@ -2363,7 +2378,7 @@ const COMMANDS = [
   { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
   { name: 'agents-nexus', description: 'Nexus: the subagents of this session, live: model, context, tools, last activity', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <names…> | on <names…> | off unused | on all]', immediate: true },
-  { name: 'automodel-nexus', description: 'Nexus: Auto Model model routing (auto picks Haiku, Sonnet or Opus per request); or force one model', argumentHint: '[auto | opus | sonnet | haiku | off | recent | reset]', immediate: true },
+  { name: 'automodel-nexus', description: 'Nexus: Auto Model model routing (auto picks Haiku, Sonnet or Opus per request); or force one model', argumentHint: '[auto | opus | sonnet | haiku | off | recent | reset | jev gray|always|off|reset]', immediate: true },
   { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
   { name: 'lean-review-nexus', description: 'Nexus: Claude reviews the uncommitted changes (or those since a base) for over-engineering; edits nothing', argumentHint: '[base]' },
   { name: 'compress-nexus', description: 'Nexus: shorten CLAUDE.md (or another memory file) with the helper model; shows the saving, asks, keeps a backup', argumentHint: '[file]' },
@@ -2405,7 +2420,7 @@ const DESIGN_SCHEMA = {
   },
 }
 
-function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanOverride: boolean): string {
+function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanOverride: boolean, jevPick: ReturnType<typeof readJevPick> = null): string {
   const on = (flag: boolean) => (flag ? 'on ' : 'off')
   const over = isLeanOverride ? ' (override)' : ''
 
@@ -2427,7 +2442,7 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     `  Quota guard         ${cfg.quotaGuard === 0 ? 'off' : `at ${cfg.quotaGuard}%`}`,
     `  Turn footer         ${on(cfg.turnFooter)}`,
     `  Provider router     /provider-nexus  (sessions started with claude-nexus)`,
-    `  Auto Model         ${cfg.autoModel}${cfg.autoJev.mode === 'gray' ? ' + Jev' : ''}  /automodel-nexus [auto|opus|sonnet|haiku|off|recent|reset]  (claude-nexus sessions)`,
+    `  Auto Model         ${cfg.autoModel}${(jevPick ?? cfg.autoJev.mode) !== 'off' ? ' + Jev' : ''}  /automodel-nexus [auto|opus|sonnet|haiku|off|recent|reset|jev gray|always|off|reset]  (claude-nexus sessions)`,
     `  Context audit       /context-nexus   MCP servers per project: /mcp-nexus${mcpOff.length > 0 ? ` (off here: ${mcpOff.join(', ')})` : ''}`,
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
@@ -2538,7 +2553,7 @@ export const register: Register = (on, options) => {
   on('command.run', { command: 'preview-nexus' }, async ($, e) => ({ text: await runPreview($, cfg, e.args) }))
 
   on('command.run', { command: 'nexus' }, async $ => ({
-    text: statusText(cfg, await read($, themeName), await currentLean($, cfg), isOverride(await read($, leanPick))),
+    text: statusText(cfg, await read($, themeName), await currentLean($, cfg), isOverride(await read($, leanPick)), readJevPick(await $.store.get(JEV_PICK_KEY).catch(() => null))),
   }))
 
   on('command.run', { command: 'handoff-nexus' }, async $ => {
