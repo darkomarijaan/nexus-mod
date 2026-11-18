@@ -337,7 +337,7 @@ The hooks live in `hooks/` (TypeScript; `register.tsx` is the only module that t
 ## Roadmap
 
 - **v0.5**: provider router; v0.5.1: one-key switch, switching from a plain session by resuming it under `claude-nexus`.
-- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2: git counts in the HUD, the Agents panel; v0.6.3: the provider form picks models from the hub on an edit too; v0.6.4: model fallback on a hub, the badge follows `/model`; v0.6.5: one row per profile in the provider pane; v0.6.6 (this version): `claude-nexus` names its own resume command on exit; v0.6.7: Claude Mode, `/automodel-nexus`, the HUD mode badge; v0.6.8 (this version): Claude Mode is called Auto Model in the settings, the pane and the status.
+- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2: git counts in the HUD, the Agents panel; v0.6.3: the provider form picks models from the hub on an edit too; v0.6.4: model fallback on a hub, the badge follows `/model`; v0.6.5: one row per profile in the provider pane; v0.6.6 (this version): `claude-nexus` names its own resume command on exit; v0.6.7: Claude Mode, `/automodel-nexus`, the HUD mode badge; v0.6.8: Claude Mode is called Auto Model in the settings, the pane and the status; v0.6.9 (this version): short questions stay light in a long conversation, slash command output no longer counts as a request.
 - **v0.7**: test-tamper guard, evidence check before "done", `/review-nexus`.
 - **v0.8**: hunk-level diff review, plan annotation in the browser.
 - Later: Telegram remote control, session search, worktree cockpit.

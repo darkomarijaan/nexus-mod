@@ -128,3 +128,32 @@ test('record keeps a bounded history with escalation and fallback status', () =>
   assert.equal(snap.totals.fallbacks, 1)
   assert.ok(snap.totals.cost > 0 && snap.totals.baseline > snap.totals.cost)
 })
+
+test('Claude Code command wrappers and their output do not count toward the score', () => {
+  const wrapped = [
+    '<local-command-caveat>The command below was run directly in Claude Code, not sent to you as a request.</local-command-caveat>',
+    '<command-name>/automodel-nexus</command-name><command-message>automodel-nexus</command-message><command-args></command-args>',
+    '<local-command-stdout>nexus: HEAVY → claude-opus-5-5 [long,coding,light-words,risk,big-context] 200 1864ms error code delete production</local-command-stdout>',
+    'jam berapa sekarang?',
+  ].join('\n')
+  assert.equal(readTurn([{ role: 'user', content: wrapped }]).text, 'jam berapa sekarang?')
+  assert.equal(tierFor(wrapped), 'haiku')
+})
+
+test('a short question stays light in a long conversation; a large prompt still keeps haiku out', () => {
+  const long = Array.from({ length: 90 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: `turn ${i}` }))
+  const body = ask('', { messages: [...long, { role: 'user', content: 'apa itu closure?' }] })
+  assert.equal(createClaudeMode().plan(body).tier, 'haiku')
+  const reasons = createClaudeMode().plan(body).reasons
+  assert.ok(!reasons.includes('big-context'))
+  // the window guard is separate and unchanged
+  assert.notEqual(createClaudeMode().plan(body, { bytes: 500_000 }).tier, 'haiku')
+})
+
+test('big context still nudges a message that is not short', () => {
+  const text = 'Tolong periksa kenapa daftar pesanan kadang tampil dua kali setelah halaman dimuat ulang, lalu jelaskan penyebabnya dengan contoh yang jelas dan langkah yang perlu diambil untuk memperbaikinya di sisi tampilan maupun di sisi server kita.'
+  const plain = classify({ text, toolCalls: 0, failures: 0, touched: 0, messages: 5 })
+  const big = classify({ text, toolCalls: 0, failures: 0, touched: 0, messages: 90 })
+  assert.equal(big.score, plain.score + 1)
+  assert.ok(big.reasons.includes('big-context'))
+})

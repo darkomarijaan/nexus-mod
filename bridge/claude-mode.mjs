@@ -56,6 +56,12 @@ function textOf(content) {
     .join('\n')
 }
 
+// What Claude Code wraps around a slash command it ran itself: its output is not the person's request.
+const COMMAND_WRAP = /<(local-command-caveat|local-command-stdout|local-command-stderr|command-name|command-message|command-args)>[\s\S]*?<\/\1>/g
+
+/** What the person typed: reminders and command wrappers cut out. */
+const typed = content => textOf(content).replace(REMINDER, '').replace(COMMAND_WRAP, '').trim()
+
 const hash = text => {
   let h = 2166136261
   for (let i = 0; i < text.length; i += 1) h = Math.imul(h ^ text.charCodeAt(i), 16777619)
@@ -75,14 +81,14 @@ export function readTurn(messages) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i]
     if (message?.role !== 'user') continue
-    const text = textOf(message.content).replace(REMINDER, '').trim()
+    const text = typed(message.content)
     if (text !== '') {
       start = i
       break
     }
   }
   if (start === -1) return null
-  const text = textOf(messages[start].content).replace(REMINDER, '').trim()
+  const text = typed(messages[start].content)
   let toolCalls = 0
   let failures = 0
   const touched = new Set()
@@ -147,7 +153,8 @@ export function classify(turn, { bytes = 0 } = {}) {
   if (RISK.test(text)) add(1, 'risk')
   if (turn.toolCalls >= 8) add(1, 'multistep')
   if (turn.failures >= 2) add(1, 'failures')
-  if (turn.messages > 80 || bytes > 400_000) add(1, 'big-context')
+  // A big context asks for a steadier model, but never lifts a short question (the window guard that keeps haiku off a huge prompt is separate).
+  if ((turn.messages > 80 || bytes > 400_000) && text.length >= 200) add(1, 'big-context')
 
   const level = score >= 4 ? 'HEAVY' : score <= 0 ? 'LIGHT' : 'MEDIUM'
 

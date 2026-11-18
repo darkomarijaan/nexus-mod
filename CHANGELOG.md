@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.9 (2026-11-18)
+
+- **Auto Model keeps short questions light:** a slash command's own wrapper and output (`<command-name>`, `<local-command-stdout>` and the like) no longer count as the person's request, so `/automodel-nexus` output does not push the next question up a tier.
+- **`big-context` only lifts a message that is not short:** a question under 200 characters stays LIGHT in a long conversation. The guard that keeps Haiku off a very large prompt is unchanged.
+
 ## 0.6.8 (2026-11-18)
 
 - **Auto Model:** the name the person sees. The settings are `autoModel`, `autoModelOpus`, `autoModelSonnet`, `autoModelHaiku`, `autoModelMaxEscalations` and `autoModelPrices`; the `/nexus` status, the command's description and the HUD use it too. The command stays `/automodel-nexus`. Behaviour is unchanged.
