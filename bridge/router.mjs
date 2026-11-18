@@ -7,6 +7,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 import { pipeline } from 'node:stream'
 
 import { createClaudeMode, createUsageTap, isRetryable } from './claude-mode.mjs'
+import { JEV_DEFAULT_HOSTS } from './jev.mjs'
 
 import {
   claudeHeaders,
@@ -136,12 +137,16 @@ export async function startRouter({
   // Where Auto Model's optional classifier finds its key, and how it reaches the service (both injectable for tests).
   env = process.env,
   jevFetch = globalThis.fetch,
+  // The hosts the Jev key may be sent to. Fixed here, by whoever starts the router; the control endpoint cannot add to them.
+  jevHosts = JEV_DEFAULT_HOSTS,
 }) {
   for (const secret of [token, controlToken]) {
     if (typeof secret !== 'string' || secret === '') throw new TypeError('startRouter needs a non-empty token and controlToken')
   }
 
-  const mode = createClaudeMode()
+  const mode = createClaudeMode({ jevHosts })
+  // Why the last Jev settings were refused, for the status; null when they were taken (or none came).
+  let jevProblem = null
   const hasJevKey = () => {
     const value = env[mode.jevKeyEnv()]
 
@@ -345,10 +350,15 @@ export async function startRouter({
     }
     if (bare === '/__nexus/mode') {
       if (req.method === 'POST') {
-        const problem = mode.configure(input)
+        // The Jev settings are judged apart: one the router refuses never costs the rest of the patch its effect.
+        const patch = input !== null && typeof input === 'object' ? { ...input } : input
+        const jev = patch !== null && typeof patch === 'object' ? patch.jev : undefined
+        if (jev !== undefined) delete patch.jev
+        const problem = mode.configure(patch)
         if (problem !== null) return json(res, 400, { error: problem })
+        if (jev !== undefined) jevProblem = mode.configure({ jev })
       } else if (req.method !== 'GET') return json(res, 404, { error: 'not found' })
-      return json(res, 200, mode.snapshot({ keyPresent: hasJevKey() }))
+      return json(res, 200, mode.snapshot({ keyPresent: hasJevKey(), jevProblem }))
     }
     if (req.method === 'POST' && bare === '/__nexus/route') {
       if (input.route === 'claude') {

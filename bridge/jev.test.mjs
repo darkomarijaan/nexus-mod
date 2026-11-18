@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { askJev, buildRequest, looksSecret, parseAnswer, trimForJev, validJevUrl, validKeyEnv } from './jev.mjs'
+import { JEV_DEFAULT_HOSTS, askJev, buildRequest, looksSecret, parseAnswer, parseHosts, trimForJev, validJevUrl, validKeyEnv } from './jev.mjs'
 
 const GOOD = {
   model: 'typesafe/jev-1.14.0',
@@ -43,16 +43,29 @@ test('messages that look like they hold a secret are caught', () => {
   assert.ok(!looksSecret('Tambah fungsi untuk validasi email di utils.ts'))
 })
 
-test('only an https address, or plain http on this machine, is taken', () => {
+test('the key goes only to https on a host that was allowed at launch', () => {
   assert.ok(validJevUrl('https://api.commandcode.ai/provider/v1/systemone'))
-  assert.ok(validJevUrl('http://127.0.0.1:8080/x'))
-  assert.ok(!validJevUrl('http://example.com/x'))
-  assert.ok(!validJevUrl('https://user:pw@example.com/x'))
-  assert.ok(!validJevUrl('ftp://example.com'))
+  assert.ok(validJevUrl('https://API.TYPESAFE.AI/v1/systemone'))
+  assert.ok(!validJevUrl('https://evil.example.com/x'))
+  assert.ok(!validJevUrl('http://api.commandcode.ai/x'))
+  assert.ok(!validJevUrl('https://user:pw@api.commandcode.ai/x'))
+  assert.ok(!validJevUrl('https://api.commandcode.ai.evil.example.com/x'))
+  assert.ok(!validJevUrl('ftp://api.commandcode.ai'))
   assert.ok(!validJevUrl('not a url'))
-  assert.ok(validKeyEnv('CMD_API_KEY'))
-  assert.ok(!validKeyEnv('1BAD'))
-  assert.ok(!validKeyEnv('a b'))
+  assert.ok(validJevUrl('https://evil.example.com/x', [...JEV_DEFAULT_HOSTS, 'evil.example.com']))
+  assert.ok(!validJevUrl('http://127.0.0.1:8080/x'))
+  assert.ok(validJevUrl('http://127.0.0.1:8080/x', ['127.0.0.1']))
+  assert.ok(!validJevUrl('http://example.com/x', ['example.com']))
+})
+
+test('hosts named at launch are plain host names only', () => {
+  assert.deepEqual(parseHosts('My.Example.com, other.example.org ,,bad host,*.wild.com,x/y'), ['my.example.com', 'other.example.org'])
+  assert.deepEqual(parseHosts(undefined), [])
+})
+
+test('only the variables a Jev key can live in are ever asked for', () => {
+  for (const name of ['CMD_API_KEY', 'TYPESAFE_API_KEY', 'JEV_API_KEY', 'NEXUS_JEV_KEY', 'NEXUS_JEV_WORK_KEY']) assert.ok(validKeyEnv(name), name)
+  for (const name of ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AWS_SECRET_ACCESS_KEY', 'PATH', 'NEXUS_JEV_', 'nexus_jev_key', '1BAD', 'a b', '', undefined, 5]) assert.ok(!validKeyEnv(name), String(name))
 })
 
 test('the key travels in the header only, and redirects are not followed', async () => {

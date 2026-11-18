@@ -25,9 +25,11 @@ export const DEFAULT_JEV: JevSettings = {
   minConfidence: 0.5,
 }
 
-// The router refuses a bad value and keeps nothing of that patch, so a bad setting must never reach it.
+// The router refuses a bad Jev value (and says why in the status), so a bad setting is cleaned here before it is sent.
 const JEV_URL = /^(?:https:\/\/[^\s/@?#]+|http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?)(?:[/?#]\S*)?$/
-const JEV_KEY_ENV = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+// The variables a Jev key may live in: the same list as the router's, so no other variable of the environment can ever be asked for.
+const JEV_KEY_NAMES = ['CMD_API_KEY', 'TYPESAFE_API_KEY', 'JEV_API_KEY']
+const JEV_KEY_ENV = { test: (name: string) => JEV_KEY_NAMES.includes(name) || /^NEXUS_JEV_[A-Z0-9_]{1,50}$/.test(name) }
 const JEV_MODEL = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/
 
 export function readJev(raw: { mode?: unknown; url?: unknown; keyEnv?: unknown; model?: unknown; timeoutMs?: unknown; minConfidence?: unknown }): JevSettings {
@@ -106,6 +108,8 @@ export type ClaudeModeSnapshot = {
     model: string
     keyEnv: string
     keyPresent: boolean
+    /** Why the router refused the last Jev settings it was given; null when it took them. */
+    problem?: string | null
     paused: boolean
     authFailed: boolean
     calls: number
@@ -149,7 +153,8 @@ export function modeStatusText(snap: ClaudeModeSnapshot): string {
     lines.push(`  tokens in ${totals.tokensIn} out ${totals.tokensOut}; est. cost ${usd(totals.cost)} (${usd(totals.baseline)} on the session's own model)`)
   }
   const { jev } = snap
-  // With Jev off (the default) there is nothing to say about it.
+  // With Jev off (the default) there is nothing to say about it, unless the router refused a setting.
+  if (jev !== undefined && typeof jev.problem === 'string') lines.push(`  Jev: a setting was refused (${jev.problem}); the last good one stays`)
   if (jev !== undefined && jev.mode === 'gray') {
     if (jev.authFailed) lines.push('  Jev: the key was rejected, using the rules (/automodel-nexus reset tries again)')
     else if (!jev.keyPresent) lines.push(`  Jev: on, but no key in ${jev.keyEnv}; using the rules`)

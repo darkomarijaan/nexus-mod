@@ -9,6 +9,7 @@ import { constants as osConstants, homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
 import { envFileCandidates, loadEnvFiles, mergeEnv } from './env-file.mjs'
+import { JEV_DEFAULT_HOSTS, parseHosts, validKeyEnv } from './jev.mjs'
 import { startRouter } from './router.mjs'
 import { latestSession, resumeHint } from './resume.mjs'
 
@@ -27,7 +28,13 @@ const log = line => {
 const fromFiles = loadEnvFiles(envFileCandidates({ env: process.env, cwd: process.cwd(), home: homedir() }))
 if (fromFiles.files.length > 0) log(`env files read: ${fromFiles.files.join(', ')}`)
 
-const router = await startRouter({ token, controlToken, log, debug: logFile !== null, env: mergeEnv(fromFiles.vars, process.env) })
+// The router is given only what it may use: the variables a Jev key can live in, never the whole environment, and
+// the hosts that key may go to (the defaults plus NEXUS_JEV_HOSTS). Both are fixed here, out of the control endpoint's reach.
+const merged = mergeEnv(fromFiles.vars, process.env)
+const jevEnv = Object.fromEntries(Object.entries(merged).filter(([name]) => validKeyEnv(name)))
+const jevHosts = [...new Set([...JEV_DEFAULT_HOSTS, ...parseHosts(merged.NEXUS_JEV_HOSTS)])]
+
+const router = await startRouter({ token, controlToken, log, debug: logFile !== null, env: jevEnv, jevHosts })
 
 for (const name of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
   if (process.env[name]) console.error(`claude-nexus: ${name} is set, so it, not your claude.ai login, reaches Anthropic on the Claude route.`)

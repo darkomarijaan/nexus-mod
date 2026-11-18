@@ -37,20 +37,44 @@ const SECRET = [
 
 export const looksSecret = text => SECRET.some(pattern => pattern.test(text))
 
-/** An https address, or plain http on this machine (for tests); never one with a user or password in it. */
-export function validJevUrl(value) {
+/**
+ * The hosts the key may be sent to unless the person who starts claude-nexus names more (NEXUS_JEV_HOSTS).
+ * The control endpoint can pick among these but never add to them, so it cannot aim the key elsewhere.
+ */
+export const JEV_DEFAULT_HOSTS = ['api.commandcode.ai', 'api.typesafe.ai']
+
+/** Host names from a comma list (NEXUS_JEV_HOSTS); anything that is not a plain host name is dropped. */
+export const parseHosts = value =>
+  String(value ?? '')
+    .split(',')
+    .map(one => one.trim().toLowerCase())
+    .filter(one => /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(one))
+
+const LOOPBACK = ['127.0.0.1', 'localhost', '[::1]']
+
+/**
+ * An address on one of `hosts`: https, or plain http only for a loopback host (a test service). Never one with a
+ * user or password in it.
+ */
+export function validJevUrl(value, hosts = JEV_DEFAULT_HOSTS) {
   try {
     const url = new URL(value)
     if (url.username !== '' || url.password !== '') return false
+    if (!hosts.includes(url.hostname.toLowerCase())) return false
     if (url.protocol === 'https:') return true
 
-    return url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+    return url.protocol === 'http:' && LOOPBACK.includes(url.hostname.toLowerCase())
   } catch {
     return false
   }
 }
 
-export const validKeyEnv = name => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)
+/**
+ * The variables the router may read for the key: three known names, or any NEXUS_JEV_*. Nothing else in the
+ * environment (an Anthropic or GitHub token, say) can ever be sent to the service.
+ */
+export const JEV_KEY_NAMES = ['CMD_API_KEY', 'TYPESAFE_API_KEY', 'JEV_API_KEY']
+export const validKeyEnv = name => typeof name === 'string' && (JEV_KEY_NAMES.includes(name) || /^NEXUS_JEV_[A-Z0-9_]{1,50}$/.test(name))
 
 const QUESTION = {
   type: 'choice',

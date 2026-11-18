@@ -139,9 +139,9 @@ console.log(JSON.stringify({ keyPresent: snap.jev.keyPresent, keyEnv: snap.jev.k
 process.exit(0)
 `
 
-function launchIn(project, home) {
+function launchIn(project, home, script = probe) {
   const fake = join(mkdtempSync(join(tmpdir(), 'nexus-fake-')), 'fake-claude.mjs')
-  writeFileSync(fake, probe)
+  writeFileSync(fake, script)
   const env = { ...process.env, CLAUDE_NEXUS_CLAUDE: process.execPath, HOME: home, USERPROFILE: home }
   delete env.CMD_API_KEY
   delete env.NEXUS_ENV_FILE
@@ -181,4 +181,30 @@ test('an empty key in a .env is no key', () => {
   const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
   writeFileSync(join(project, '.env'), 'CMD_API_KEY=\n')
   assert.equal(launchIn(project, mkdtempSync(join(tmpdir(), 'nexus-home-'))).keyPresent, false)
+})
+
+// Tries three Jev settings on the control endpoint, as a hostile or mistaken caller holding the token might.
+const aim = `const base = process.env.ANTHROPIC_BASE_URL
+const control = process.env.NEXUS_ROUTER_TOKEN
+const send = async jev => {
+  const response = await fetch(base + '/__nexus/mode', { method: 'POST', headers: { 'x-nexus-control': control, 'content-type': 'application/json' }, body: JSON.stringify({ jev }) })
+  return (await response.json()).jev.problem
+}
+console.log(JSON.stringify({
+  named: await send({ url: 'https://my.example.com/x' }),
+  other: await send({ url: 'https://other.example.com/x' }),
+  variable: await send({ keyEnv: 'ANTHROPIC_API_KEY' }),
+  own: await send({ keyEnv: 'CMD_API_KEY' }),
+}))
+process.exit(0)
+`
+
+test('the key can go only to hosts named at launch, and only be read from a Jev variable', () => {
+  const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
+  writeFileSync(join(project, '.env'), 'CMD_API_KEY=k\nANTHROPIC_API_KEY=not-for-jev\nNEXUS_JEV_HOSTS=my.example.com\n')
+  const out = launchIn(project, mkdtempSync(join(tmpdir(), 'nexus-home-')), aim)
+  assert.equal(out.named, null)
+  assert.match(out.other, /allowed host/)
+  assert.match(out.variable, /CMD_API_KEY/)
+  assert.equal(out.own, null)
 })

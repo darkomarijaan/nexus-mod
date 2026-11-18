@@ -654,7 +654,7 @@ async function withJev(env, handler, run, settings = {}) {
   seen.jev = []
   const jev = await fake('jev', handler)
   const main = router
-  router = await startRouter({ token: TOKEN, controlToken: CONTROL, anthropic: `http://127.0.0.1:${anthropic.address().port}`, env })
+  router = await startRouter({ token: TOKEN, controlToken: CONTROL, anthropic: `http://127.0.0.1:${anthropic.address().port}`, env, jevHosts: ['127.0.0.1'] })
   try {
     const url = `http://127.0.0.1:${jev.address().port}/v1/systemone`
     assert.equal((await setMode({ jev: { mode: 'gray', url, timeoutMs: 400, ...settings } })).status, 200)
@@ -715,4 +715,19 @@ test('with Jev, a service that is down is the rules\' business', async () => {
     assert.equal(answer.status, 200)
     assert.equal(modelSent(), 'claude-sonnet-5-5')
   })
+})
+
+test('the Jev key cannot be aimed at another host or taken from another variable, and the rest of the patch still applies', async () => {
+  const aimed = await setMode({ mode: 'opus', jev: { url: 'https://evil.example.com/x' } })
+  assert.equal(aimed.status, 200)
+  const snap = JSON.parse(aimed.text)
+  assert.equal(snap.mode, 'opus')
+  assert.match(snap.jev.problem, /allowed host/)
+  const taken = JSON.parse((await setMode({ jev: { keyEnv: 'ANTHROPIC_API_KEY' } })).text)
+  assert.match(taken.jev.problem, /CMD_API_KEY/)
+  assert.equal(taken.jev.keyEnv, 'CMD_API_KEY')
+  const fine = JSON.parse((await setMode({ mode: 'auto', jev: { mode: 'off' } })).text)
+  assert.equal(fine.jev.problem, null)
+  assert.equal(fine.mode, 'auto')
+  assert.equal((await setMode({ mode: 'turbo', jev: { mode: 'off' } })).status, 400)
 })

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1 (2026-11-18)
+
+- **Security hardening for the Jev key:** in 0.7.0 the router's control endpoint could name which environment variable the router read for the Jev key and which address it was sent to, so a caller holding the control token could have aimed any variable of the router's environment at any https host. Now the router is given only the variables a Jev key can live in (`CMD_API_KEY`, `TYPESAFE_API_KEY`, `JEV_API_KEY` or a `NEXUS_JEV_*` name), never the rest of the environment, and the key can only be sent to `api.commandcode.ai`, `api.typesafe.ai` or hosts listed in `NEXUS_JEV_HOSTS`. Both lists are fixed when `claude-nexus` starts, so the plugin's settings and the control endpoint cannot widen them. The control token is random and known only to the plugin, so this was hardening, not a remote hole. If you use Jev, update.
+- **A refused Jev setting no longer costs the rest:** the router applies the mode and model settings and reports why a Jev setting was refused; `/automodel-nexus` shows it as `Jev: a setting was refused (...)`.
+
 ## 0.7.0 (2026-11-18)
 
 - **Optional Jev classifier for Auto Model (off by default):** with `autoModelJev` set to `gray`, when the built-in rules are unsure about a message, Auto Model asks [Jev](https://docs.typesafe.ai/introduction) (TypeSafe), through any service that takes the same request (by default Command Code), to judge it light, medium or heavy. Nothing depends on it: with the setting off, without a key, or on any failure (a timeout, an error, a rejected key, an unsure answer) the rules decide exactly as before. Only the message you typed is sent (cut to about 2,500 characters; never tool output, files, the system prompt or history), and never one that looks like it holds a key or token. One question per turn, `autoModelJevTimeoutMs` (1500) at most; three failures in a row pause it for five minutes. `/automodel-nexus` shows how it is doing and says so plainly when the key is missing.

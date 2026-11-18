@@ -109,4 +109,13 @@ describe('auto model with the optional Jev classifier', () => {
     expect(modeStatusText(snapshot({ ...live, authFailed: true }))).toContain('the key was rejected')
     expect(modeStatusText(snapshot({ ...live, paused: true }))).toContain('paused after repeated failures')
   })
+
+  test('only a Jev key variable can be named, and a refused setting is said out loud', () => {
+    expect(readConfig({ autoModelJevKeyEnv: 'ANTHROPIC_API_KEY' }).autoJev.keyEnv).toBe(DEFAULT_JEV.keyEnv)
+    expect(readConfig({ autoModelJevKeyEnv: 'GITHUB_TOKEN' }).autoJev.keyEnv).toBe(DEFAULT_JEV.keyEnv)
+    expect(readConfig({ autoModelJevKeyEnv: 'NEXUS_JEV_WORK_KEY' }).autoJev.keyEnv).toBe('NEXUS_JEV_WORK_KEY')
+    expect(readConfig({ autoModelJevKeyEnv: 'TYPESAFE_API_KEY' }).autoJev.keyEnv).toBe('TYPESAFE_API_KEY')
+    expect(modeStatusText(snapshot({ ...live, mode: 'off', problem: 'jev url must be an https address on an allowed host' }))).toContain('Jev: a setting was refused (jev url must be an https address on an allowed host)')
+    expect(modeStatusText(snapshot({ ...live, problem: null }))).not.toContain('refused')
+  })
 })

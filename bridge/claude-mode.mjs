@@ -8,7 +8,7 @@
 // failures. It never reads or keeps prompt text beyond scoring it in memory:
 // the records it keeps hold reason codes, never text.
 
-import { DEFAULT_JEV, JEV_MIN_PROBABILITY, askJev, looksSecret, validJevUrl, validKeyEnv } from './jev.mjs'
+import { DEFAULT_JEV, JEV_DEFAULT_HOSTS, JEV_MIN_PROBABILITY, askJev, looksSecret, validJevUrl, validKeyEnv } from './jev.mjs'
 
 export const MODES = ['auto', 'off', 'opus', 'sonnet', 'haiku']
 export const TIERS = ['opus', 'sonnet', 'haiku']
@@ -269,7 +269,7 @@ export function costOf(usage, price) {
 // ── The engine ───────────────────────────────────────────────────────────
 
 /** Auto Model's state and decisions for one router. `now` is injectable for tests. */
-export function createClaudeMode({ now = () => Date.now() } = {}) {
+export function createClaudeMode({ now = () => Date.now(), jevHosts = JEV_DEFAULT_HOSTS } = {}) {
   const state = {
     mode: 'auto',
     models: { ...DEFAULT_MODELS },
@@ -315,11 +315,11 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
         jev.mode = given.mode
       }
       if (given.url !== undefined) {
-        if (typeof given.url !== 'string' || !validJevUrl(given.url)) return 'jev url must be an https address'
+        if (typeof given.url !== 'string' || !validJevUrl(given.url, jevHosts)) return 'jev url must be an https address on an allowed host (NEXUS_JEV_HOSTS adds more)'
         jev.url = given.url
       }
       if (given.keyEnv !== undefined) {
-        if (!validKeyEnv(given.keyEnv)) return 'jev keyEnv must be an environment variable name'
+        if (!validKeyEnv(given.keyEnv)) return 'jev keyEnv must be CMD_API_KEY, TYPESAFE_API_KEY, JEV_API_KEY or a NEXUS_JEV_ name'
         jev.keyEnv = given.keyEnv
       }
       if (given.model !== undefined) {
@@ -509,7 +509,7 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
   }
 
   /** `keyPresent` is the router's word that the key variable is set; the key itself never comes here to be kept. */
-  const snapshot = ({ keyPresent = false } = {}) => ({
+  const snapshot = ({ keyPresent = false, jevProblem = null } = {}) => ({
     mode: state.mode,
     models: { ...state.models },
     prices: state.prices,
@@ -521,6 +521,7 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
       model: state.jev.model,
       keyEnv: state.jev.keyEnv,
       keyPresent: keyPresent === true,
+      problem: typeof jevProblem === 'string' ? jevProblem : null,
       paused: now() < state.jevStats.pausedUntil,
       authFailed: state.jevStats.authFailed,
       calls: state.jevStats.calls,
