@@ -43,6 +43,11 @@ describe('claude mode', () => {
     expect(modeStatusText(snap)).toContain('escalations 1, fallbacks 1')
     expect(modeRecentText(snap)).toContain('LIGHT → h [short] 200 40ms')
     expect(modeRecentText({ ...snap, recent: [] })).toBe('No routed requests yet.')
+    const [first] = snap.recent
+    if (first === undefined) throw new Error('fixture')
+    const shaped = { ...first, incoming: 'claude-haiku-5-5', shape: { messages: 3, tools: 2, maxTokens: 64, last: 'user/tool_result', stream: true, system: true } }
+    expect(modeRecentText({ ...snap, recent: [shaped] })).toContain('↳ asked claude-haiku-5-5 · 3 msgs · 2 tools · max 64 · last user/tool_result')
+    expect(modeRecentText(snap)).not.toContain('↳')
   })
 
   test('the HUD badge: auto names the last tier, manual the pick, off and no router none', () => {

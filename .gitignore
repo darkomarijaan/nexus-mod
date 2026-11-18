@@ -12,3 +12,8 @@ Thumbs.db
 
 # Browser automation logs
 .playwright-mcp/
+
+# Local secrets (API keys): never commit
+.env
+.env.*
+!.env.example

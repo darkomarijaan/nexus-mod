@@ -52,6 +52,10 @@ type Entry = {
   reasons: string[]
   escalation: { from: string; to: string; why: string } | null
   fallbacks: { model: string | null; status: number }[]
+  /** The model Claude Code asked for. Missing in entries from an older router. */
+  incoming?: string
+  /** Counts and kinds of the request, never text. Missing in entries from an older router. */
+  shape?: { messages: number; tools: number; maxTokens: number | null; last: string | null; stream: boolean; system: boolean }
 }
 export type ClaudeModeSnapshot = {
   mode: string
@@ -106,7 +110,13 @@ export function modeRecentText(snap: ClaudeModeSnapshot): string {
         one.cost === null ? '' : usd(one.cost),
       ].filter(Boolean)
 
-      return `${one.level ?? one.mode} → ${one.model} [${one.reasons.join(',')}] ${one.status} ${one.ms}ms${extra.length > 0 ? ` · ${extra.join(' · ')}` : ''}`
+      const head = `${one.level ?? one.mode} → ${one.model} [${one.reasons.join(',')}] ${one.status} ${one.ms}ms${extra.length > 0 ? ` · ${extra.join(' · ')}` : ''}`
+      const { shape } = one
+      const asked = one.incoming === undefined ? [] : [`asked ${one.incoming}`]
+      const form = shape === undefined ? [] : [`${shape.messages} msgs`, `${shape.tools} tools`, `max ${shape.maxTokens ?? '-'}`, `last ${shape.last ?? '-'}`]
+      const detail = [...asked, ...form]
+
+      return detail.length === 0 ? head : `${head}\n    ↳ ${detail.join(' · ')}`
     })
     .join('\n')
 }

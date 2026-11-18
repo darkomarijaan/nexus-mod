@@ -106,6 +106,29 @@ export function readTurn(messages) {
   return { key: `${start}:${hash(text.slice(0, 300))}`, text, toolCalls, failures, touched: touched.size, messages: messages.length }
 }
 
+/**
+ * What a request looks like, as counts and kinds only: how many messages and tools, the output cap,
+ * what the last message is made of. Enough to tell a person's turn from a background call; never text.
+ */
+export function shapeOf(body) {
+  const messages = Array.isArray(body?.messages) ? body.messages : []
+  const tail = messages.at(-1)
+  let last = null
+  if (tail !== undefined && tail !== null) {
+    const kind = typeof tail.content === 'string' ? 'text' : Array.isArray(tail.content) ? String(tail.content.at(-1)?.type ?? 'empty') : 'empty'
+    last = `${String(tail.role ?? '?').slice(0, 12)}/${kind.slice(0, 20)}`
+  }
+
+  return {
+    messages: messages.length,
+    tools: Array.isArray(body?.tools) ? body.tools.length : 0,
+    maxTokens: Number.isFinite(body?.max_tokens) ? body.max_tokens : null,
+    last,
+    stream: body?.stream === true,
+    system: body?.system !== undefined && body.system !== null && body.system !== '',
+  }
+}
+
 // ── Classifying ──────────────────────────────────────────────────────────
 
 const HEAVY = [
@@ -331,7 +354,7 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
     const rest = [incoming, ...[...TIERS.slice(TIERS.indexOf(tier) + 1), ...TIERS.slice(0, TIERS.indexOf(tier)).reverse()].map(one => state.models[one])]
     const chain = [...new Set([model, ...rest])].slice(0, 3)
 
-    return { mode: state.mode, tier, model, incoming, chain, level, score, reasons: [...reasons], escalation }
+    return { mode: state.mode, tier, model, incoming, chain, level, score, reasons: [...reasons], escalation, shape: shapeOf(body) }
   }
 
   /** Files one answer into the history and totals; `usage` may be null, `fallbacks` lists the models that failed first. */
@@ -347,6 +370,7 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
       reasons: decision.reasons,
       model,
       incoming: decision.incoming,
+      shape: decision.shape,
       status,
       ms,
       tokensIn: usage === null ? null : usage.input + usage.cacheRead + usage.cacheWrite,

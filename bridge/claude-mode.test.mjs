@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { classify, costOf, createClaudeMode, createUsageTap, escalationReason, parsePrices, readTurn } from './claude-mode.mjs'
+import { classify, costOf, createClaudeMode, createUsageTap, escalationReason, parsePrices, readTurn, shapeOf } from './claude-mode.mjs'
 
 const TOOLS = [{ name: 'Bash' }]
 const ask = (text, extra = {}) => ({ model: 'claude-sonnet-5-5', tools: TOOLS, messages: [{ role: 'user', content: text }], ...extra })
@@ -156,4 +156,34 @@ test('big context still nudges a message that is not short', () => {
   const big = classify({ text, toolCalls: 0, failures: 0, touched: 0, messages: 90 })
   assert.equal(big.score, plain.score + 1)
   assert.ok(big.reasons.includes('big-context'))
+})
+
+test('a request shape holds counts and kinds only, never text', () => {
+  const body = {
+    model: 'claude-haiku-5-5',
+    max_tokens: 64,
+    stream: true,
+    tools: [{ name: 'Bash' }, { name: 'Read' }],
+    system: 'secret system prompt text',
+    messages: [
+      { role: 'user', content: 'private question text' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'Bash', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'private output' }] },
+    ],
+  }
+  const shape = shapeOf(body)
+  assert.deepEqual(shape, { messages: 3, tools: 2, maxTokens: 64, last: 'user/tool_result', stream: true, system: true })
+  assert.ok(!JSON.stringify(shape).includes('private'))
+  assert.deepEqual(shapeOf({ messages: 'nope' }), { messages: 0, tools: 0, maxTokens: null, last: null, stream: false, system: false })
+})
+
+test('a decision and its record carry the shape and the incoming model', () => {
+  const mode = createClaudeMode()
+  const body = ask('apa itu closure?', { model: 'claude-haiku-5-5', max_tokens: 32 })
+  const decision = mode.plan(body)
+  assert.equal(decision.shape.maxTokens, 32)
+  assert.equal(decision.shape.last, 'user/text')
+  const entry = mode.record(decision, { model: decision.model, status: 200, ms: 5, usage: null, fallbacks: [] })
+  assert.equal(entry.incoming, 'claude-haiku-5-5')
+  assert.deepEqual(entry.shape, decision.shape)
 })

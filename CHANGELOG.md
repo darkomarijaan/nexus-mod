@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.10 (2026-11-18)
+
+- **Auto Model records what a request looks like:** each routed request keeps counts and kinds only (messages, tools, output cap, what the last message is made of) and the model Claude Code asked for. `/automodel-nexus recent` shows them on a second line under each decision, so a person's turn can be told from a background call. Never prompt text.
+
 ## 0.6.9 (2026-11-18)
 
 - **Auto Model keeps short questions light:** a slash command's own wrapper and output (`<command-name>`, `<local-command-stdout>` and the like) no longer count as the person's request, so `/automodel-nexus` output does not push the next question up a tier.
