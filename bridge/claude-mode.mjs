@@ -21,6 +21,12 @@ export const DEFAULT_PRICES = { opus: { in: 15, out: 75 }, sonnet: { in: 3, out:
 const MODEL_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/
 // A model whose window is small must not take a prompt this big (bytes of the request body, about 4 per token).
 const HAIKU_MAX_BYTES = 480_000
+// Prompt caches belong to one model, so a switch re-sends the whole conversation uncached. Past this size a turn
+// keeps the tier of the one before unless it moves up, drops by two tiers, or has been one tier lower for
+// STICKY_TURNS turns in a row (so one short "ok" never flips the model, and the session is never stuck high).
+export const STICKY_MESSAGES = 40
+export const STICKY_BYTES = 150_000
+export const STICKY_TURNS = 3
 const RECENT_MAX = 30
 const FAIL_STATUS = new Set([400, 403, 404, 408, 429, 500, 502, 503, 504, 529])
 
@@ -277,6 +283,8 @@ export function createClaudeMode({ now = () => Date.now(), jevHosts = JEV_DEFAUL
     prices: { ...DEFAULT_PRICES },
     maxEscalations: 2,
     turn: null,
+    lastTier: null,
+    lowerStreak: 0,
     // The optional classifier. Off unless the settings turn it on; never needed.
     jev: { ...DEFAULT_JEV },
     jevStats: { calls: 0, used: 0, lowConf: 0, timeouts: 0, errors: 0, skipped: 0, tokensIn: 0, tokensOut: 0, failures: 0, pausedUntil: 0, authFailed: false },
@@ -370,7 +378,20 @@ export function createClaudeMode({ now = () => Date.now(), jevHosts = JEV_DEFAUL
       const kept = state.turn !== null && state.turn.key === turn.key ? state.turn : null
       if (kept === null) {
         const found = applyHint(classify(turn, { bytes }), hint)
-        state.turn = { key: turn.key, tier: TIER_OF_LEVEL[found.level], level: found.level, score: found.score, reasons: found.reasons, escalations: 0 }
+        let picked = TIER_OF_LEVEL[found.level]
+        let why = found.reasons
+        // A long conversation stays on the model it is cached on, unless the work moves up or drops two tiers.
+        const big = turn.messages >= STICKY_MESSAGES || bytes >= STICKY_BYTES
+        if (big && state.lastTier !== null && TIERS.indexOf(picked) - TIERS.indexOf(state.lastTier) === 1) {
+          state.lowerStreak += 1
+          if (state.lowerStreak < STICKY_TURNS) {
+            picked = state.lastTier
+            why = [...why, 'sticky']
+          }
+        } else {
+          state.lowerStreak = 0
+        }
+        state.turn = { key: turn.key, tier: picked, level: found.level, score: found.score, reasons: why, escalations: 0 }
       } else if (kept.escalations < state.maxEscalations && UP[kept.tier] !== undefined) {
         const why = escalationReason(kept.tier, turn)
         if (why !== null) {
@@ -387,6 +408,7 @@ export function createClaudeMode({ now = () => Date.now(), jevHosts = JEV_DEFAUL
       tier = 'sonnet'
       reasons = [...reasons, 'haiku-window']
     }
+    if (state.mode === 'auto') state.lastTier = tier
     const model = state.models[tier]
     // Ask the model the session itself chose next (known good), then the other tiers; three tries at most.
     const rest = [incoming, ...[...TIERS.slice(TIERS.indexOf(tier) + 1), ...TIERS.slice(0, TIERS.indexOf(tier)).reverse()].map(one => state.models[one])]

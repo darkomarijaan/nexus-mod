@@ -13,6 +13,12 @@ import { JEV_DEFAULT_HOSTS, parseHosts, validKeyEnv } from './jev.mjs'
 import { startRouter } from './router.mjs'
 import { latestSession, resumeHint } from './resume.mjs'
 
+// `claude-nexus jev-key` saves the optional Jev key (hidden prompt) and exits; it never starts claude.
+if (process.argv[2] === 'jev-key') {
+  const { runJevKey } = await import('./jev-key.mjs')
+  process.exit(await runJevKey(process.argv.slice(3)))
+}
+
 const startedAt = Date.now()
 
 const token = randomBytes(32).toString('hex')

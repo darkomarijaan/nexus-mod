@@ -421,3 +421,48 @@ test('always can be set and is refused for a word that is not a mode', () => {
   assert.match(mode.configure({ jev: { mode: 'sometimes' } }) ?? '', /off, gray or always/)
   assert.equal(mode.snapshot().jev.mode, 'always')
 })
+
+// ── A long conversation stays on the model it is cached on ───────────────
+const deep = (text, earlier) => ask(text, { messages: [...Array.from({ length: earlier }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: i % 2 === 0 ? `earlier ${i}` : 'ok' })), { role: 'user', content: text }] })
+
+test('a short conversation switches model freely', () => {
+  const mode = createClaudeMode()
+  assert.equal(mode.plan(deep('Implement a login endpoint with tests', 4)).tier, 'sonnet')
+  assert.equal(mode.plan(deep('apa itu closure?', 6)).tier, 'haiku')
+})
+
+test('a long conversation does not drop one tier for a short question until it keeps asking', () => {
+  const mode = createClaudeMode()
+  assert.equal(mode.plan(deep('Implement a login endpoint with tests', 40)).tier, 'sonnet')
+  const first = mode.plan(deep('apa itu closure?', 42))
+  assert.equal(first.tier, 'sonnet')
+  assert.ok(first.reasons.includes('sticky'))
+  assert.equal(mode.plan(deep('apa itu closure lagi?', 44)).tier, 'sonnet')
+  const third = mode.plan(deep('apa itu promise?', 46))
+  assert.equal(third.tier, 'haiku')
+  assert.ok(!third.reasons.includes('sticky'))
+  // Once there, it is the new tier: no streak is carried over.
+  assert.equal(mode.plan(deep('apa itu monad?', 48)).tier, 'haiku')
+})
+
+test('a long conversation still moves up at once, and a coding turn resets the streak', () => {
+  const mode = createClaudeMode()
+  assert.equal(mode.plan(deep('apa itu closure?', 40)).tier, 'haiku')
+  assert.equal(mode.plan(deep('Implement a login endpoint with tests', 42)).tier, 'sonnet')
+  assert.equal(mode.plan(deep('apa itu closure?', 44)).tier, 'sonnet')
+  assert.equal(mode.plan(deep('Implement a signup endpoint with tests', 46)).tier, 'sonnet')
+  assert.equal(mode.plan(deep('apa itu closure?', 48)).tier, 'sonnet')
+  assert.equal(mode.plan(deep('apa itu promise?', 50)).tier, 'sonnet')
+})
+
+test('a long conversation drops two tiers at once', () => {
+  const mode = createClaudeMode()
+  assert.equal(mode.plan(deep('Rancang arsitektur microservice untuk sistem pembayaran dan bahas trade-off-nya', 40)).tier, 'opus')
+  assert.equal(mode.plan(deep('apa itu closure?', 42)).tier, 'haiku')
+})
+
+test('a long conversation is told apart by size as well as by message count', () => {
+  const mode = createClaudeMode()
+  assert.equal(mode.plan(ask('Implement a login endpoint with tests'), { bytes: 200_000 }).tier, 'sonnet')
+  assert.equal(mode.plan(ask('apa itu closure?', { messages: [{ role: 'user', content: 'apa itu closure?' }, { role: 'assistant', content: 'a' }, { role: 'user', content: 'apa itu promise?' }] }), { bytes: 200_000 }).tier, 'sonnet')
+})

@@ -177,7 +177,7 @@ export function modeStatusText(snap: ClaudeModeSnapshot): string {
   if (jev !== undefined && typeof jev.problem === 'string') lines.push(`  Jev: a setting was refused (${jev.problem}); the last good one stays`)
   if (jev !== undefined && (jev.mode === 'gray' || jev.mode === 'always')) {
     if (jev.authFailed) lines.push('  Jev: the key was rejected, using the rules (/automodel-nexus reset tries again)')
-    else if (!jev.keyPresent) lines.push(`  Jev: on, but no key in ${jev.keyEnv}; using the rules`)
+    else if (!jev.keyPresent) lines.push(`  Jev: on, but no key in ${jev.keyEnv}; using the rules (run \`claude-nexus jev-key\` in a terminal to add it)`)
     else if (jev.paused) lines.push('  Jev: paused after repeated failures; using the rules for a few minutes')
     else lines.push(`  Jev: ${jev.model}, ${jev.mode === 'always' ? 'every turn' : 'gray zone only'}; asked ${jev.calls}, used ${jev.used}, low confidence ${jev.lowConf}, timeouts ${jev.timeouts}, errors ${jev.errors}, skipped ${jev.skipped}; tokens in ${jev.tokensIn} out ${jev.tokensOut}`)
   }

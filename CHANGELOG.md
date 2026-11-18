@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.4 (2026-11-18)
+
+- **Jev key in one command:** `claude-nexus jev-key` asks for the key with nothing shown as you paste it, and saves it to `~/.claude/nexus/.env`, the file the router reads. It never goes through a chat, a command argument or a settings file, and the screen shows only its length. `claude-nexus jev-key --remove` forgets it. `/automodel-nexus` now names this command when no key is found.
+- **Auto Model stays on one model in a long conversation:** a prompt cache belongs to one model, so each switch re-sent the whole conversation uncached. From 40 messages (or about 150 KB) on, a turn keeps the tier of the one before, except that it still moves up at once or drops two tiers at once; dropping one tier waits for three such turns in a row (reason code `sticky`). A short "ok" no longer flips the model.
+
 ## 0.7.3 (2026-11-18)
 
 - **`/automodel-nexus jev gray|always|off|reset`:** turn the optional Jev classifier on or off from inside the session, without editing a settings file. The pick is remembered across sessions and beats the plugin setting until `jev reset`. It only decides whether Jev is used: the key and the hosts it may go to are still never set from here.

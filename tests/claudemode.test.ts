@@ -105,7 +105,7 @@ describe('auto model with the optional Jev classifier', () => {
 
   test('with Jev on the status says what is happening, and why when it cannot help', () => {
     expect(modeStatusText(snapshot(live))).toContain('Jev: typesafe/jev-1.14.0, gray zone only; asked 4, used 3, low confidence 1')
-    expect(modeStatusText(snapshot({ ...live, keyPresent: false }))).toContain('Jev: on, but no key in CMD_API_KEY; using the rules')
+    expect(modeStatusText(snapshot({ ...live, keyPresent: false }))).toContain('Jev: on, but no key in CMD_API_KEY; using the rules (run `claude-nexus jev-key` in a terminal to add it)')
     expect(modeStatusText(snapshot({ ...live, authFailed: true }))).toContain('the key was rejected')
     expect(modeStatusText(snapshot({ ...live, paused: true }))).toContain('paused after repeated failures')
   })
