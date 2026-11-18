@@ -1,5 +1,5 @@
 /*
- * Claude Mode, the hook side: the /automodel-nexus arguments, the settings the
+ * Auto Model, the hook side: the /automodel-nexus arguments, the settings the
  * router is given, and the status text. The routing itself lives in the bridge
  * (bridge/claude-mode.mjs), the only place that sees a request's body.
  */
@@ -82,7 +82,7 @@ export function modeStatusText(snap: ClaudeModeSnapshot): string {
   const { totals } = snap
   const how = snap.mode === 'auto' ? 'router picks the model' : snap.mode === 'off' ? 'requests go as Claude Code sent them' : 'manual: always this model'
   const lines = [
-    `Claude Mode: ${snap.mode} (${how})`,
+    `Auto Model: ${snap.mode} (${how})`,
     `  opus ${snap.models.opus} · sonnet ${snap.models.sonnet} · haiku ${snap.models.haiku}`,
     `  requests ${totals.requests}: opus ${totals.byTier.opus ?? 0}, sonnet ${totals.byTier.sonnet ?? 0}, haiku ${totals.byTier.haiku ?? 0}; escalations ${totals.escalations}, fallbacks ${totals.fallbacks}`,
   ]

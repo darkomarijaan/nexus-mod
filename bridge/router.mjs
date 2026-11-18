@@ -223,7 +223,7 @@ export async function startRouter({
       try {
         parsed = parseBody(body)
       } catch (error) {
-        // Claude Mode only reads; a body it cannot parse goes on untouched (unless the hub rule below needs it).
+        // Auto Model only reads; a body it cannot parse goes on untouched (unless the hub rule below needs it).
         if (state.usedHub) throw error
       }
     }
@@ -234,7 +234,7 @@ export async function startRouter({
         payload = Buffer.from(JSON.stringify(safe))
       }
     }
-    // Claude Mode: pick the model for a main-thread request. Any failure in it leaves the request as it came.
+    // Auto Model: pick the model for a main-thread request. Any failure in it leaves the request as it came.
     let plan = null
     if (inference && parsed !== null) {
       try {

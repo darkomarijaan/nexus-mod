@@ -1850,7 +1850,7 @@ async function saveProfiles($: Engine, list: ProviderProfile[]): Promise<void> {
   await update($, provider, now => ({ ...now, profiles: list.map(summarize) }))
 }
 
-// ── Claude Mode: the router's model routing, steered from here ───────────
+// ── Auto Model: the router's model routing, steered from here ───────────
 
 const CLAUDE_MODE_KEY = 'claudeMode'
 
@@ -1879,7 +1879,7 @@ async function refreshModeBadge($: Engine, snap?: ClaudeModeSnapshot | null): Pr
 async function runClaudeMode($: Engine, cfg: NexusConfig, args: string): Promise<string> {
   const command = parseModeArgs(args)
   if (command.kind === 'error') return command.message
-  if ((await ensureRouterLink($)) === null) return 'Claude Mode routes through the claude-nexus router; this is a plain claude session. Start it with claude-nexus.'
+  if ((await ensureRouterLink($)) === null) return 'Auto Model routes through the claude-nexus router; this is a plain claude session. Start it with claude-nexus.'
   if (command.kind === 'set') await $.store.set(CLAUDE_MODE_KEY, command.mode)
   if (command.kind === 'reset') await $.store.delete(CLAUDE_MODE_KEY).catch(() => undefined)
   const pick = command.kind === 'set' ? command.mode : command.kind === 'reset' ? null : undefined
@@ -2363,7 +2363,7 @@ const COMMANDS = [
   { name: 'provider-nexus', description: 'Nexus: switch this claude-nexus session between Claude and a hub profile', argumentHint: '[status | use <name|claude> | test <name>]', immediate: true },
   { name: 'agents-nexus', description: 'Nexus: the subagents of this session, live: model, context, tools, last activity', immediate: true },
   { name: 'mcp-nexus', description: 'Nexus: turn MCP servers off or on for this project', argumentHint: '[list | off <names…> | on <names…> | off unused | on all]', immediate: true },
-  { name: 'automodel-nexus', description: 'Nexus: Claude Mode model routing (auto picks Haiku, Sonnet or Opus per request); or force one model', argumentHint: '[auto | opus | sonnet | haiku | off | recent | reset]', immediate: true },
+  { name: 'automodel-nexus', description: 'Nexus: Auto Model model routing (auto picks Haiku, Sonnet or Opus per request); or force one model', argumentHint: '[auto | opus | sonnet | haiku | off | recent | reset]', immediate: true },
   { name: 'lean-nexus', description: 'Nexus: terse replies and minimal code; switch a level or turn them off', argumentHint: '[talk off|lite|ultra] [code on|off] | on | off | reset', immediate: true },
   { name: 'lean-review-nexus', description: 'Nexus: Claude reviews the uncommitted changes (or those since a base) for over-engineering; edits nothing', argumentHint: '[base]' },
   { name: 'compress-nexus', description: 'Nexus: shorten CLAUDE.md (or another memory file) with the helper model; shows the saving, asks, keeps a backup', argumentHint: '[file]' },
@@ -2427,7 +2427,7 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     `  Quota guard         ${cfg.quotaGuard === 0 ? 'off' : `at ${cfg.quotaGuard}%`}`,
     `  Turn footer         ${on(cfg.turnFooter)}`,
     `  Provider router     /provider-nexus  (sessions started with claude-nexus)`,
-    `  Claude Mode         ${cfg.autoModel}  /automodel-nexus [auto|opus|sonnet|haiku|off|recent|reset]  (claude-nexus sessions)`,
+    `  Auto Model         ${cfg.autoModel}  /automodel-nexus [auto|opus|sonnet|haiku|off|recent|reset]  (claude-nexus sessions)`,
     `  Context audit       /context-nexus   MCP servers per project: /mcp-nexus${mcpOff.length > 0 ? ` (off here: ${mcpOff.join(', ')})` : ''}`,
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,

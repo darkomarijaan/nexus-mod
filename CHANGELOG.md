@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.8 (2026-11-18)
+
+- **Auto Model:** the name the person sees. The settings are `autoModel`, `autoModelOpus`, `autoModelSonnet`, `autoModelHaiku`, `autoModelMaxEscalations` and `autoModelPrices`; the `/nexus` status, the command's description and the HUD use it too. The command stays `/automodel-nexus`. Behaviour is unchanged.
+
 ## 0.6.7 (2026-11-18)
 
 - **Claude Mode:** in a `claude-nexus` session on the Claude route, the router picks the model per request: light questions to Haiku, everyday coding to Sonnet, deep reasoning to Opus. Escalation moves a turn up only on measured failures; a failed request is retried on another model before any output reaches Claude Code.

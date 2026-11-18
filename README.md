@@ -196,7 +196,7 @@ From a local folder, first replace its contents with the new release (`git pull`
 | `/enhance-nexus <rough prompt>` | Rewrite a rough prompt as Goal / Context / Acceptance criteria into the prompt box |
 | `/context-nexus` | Where the context goes before you type, and what could go |
 | `/mcp-nexus` | Switcher for the MCP servers in this project; also `list`, `off <names…>`, `on <names…>`, `off unused`, `on all` |
-| `/automodel-nexus` | Claude Mode model routing in claude-nexus sessions: `auto`, `opus`, `sonnet`, `haiku`, `off`, `recent`, `reset` |
+| `/automodel-nexus` | Auto Model model routing in claude-nexus sessions: `auto`, `opus`, `sonnet`, `haiku`, `off`, `recent`, `reset` |
 | `/lean-nexus` | Terse replies and minimal code: `talk off\|lite\|ultra`, `code on\|off`, `off`, `on`, `reset` |
 | `/lean-review-nexus [base]` | Review the changes for over-engineering; edits nothing |
 | `/compress-nexus [file]` | Shorten `CLAUDE.md` (or another memory file) safely, with a backup |
@@ -220,7 +220,7 @@ From a local folder, first replace its contents with the new release (`git pull`
 
 Every key also has a command. A mod cannot take a bare `ctrl+z` or a `ctrl+x s` chord in this Claude Code build, so the keys go through the bar.
 
-## Claude Mode
+## Auto Model
 
 In a `claude-nexus` session on the Claude route, the router picks the model per request. Plain `claude` sessions are untouched.
 
@@ -337,7 +337,7 @@ The hooks live in `hooks/` (TypeScript; `register.tsx` is the only module that t
 ## Roadmap
 
 - **v0.5**: provider router; v0.5.1: one-key switch, switching from a plain session by resuming it under `claude-nexus`.
-- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2: git counts in the HUD, the Agents panel; v0.6.3: the provider form picks models from the hub on an edit too; v0.6.4: model fallback on a hub, the badge follows `/model`; v0.6.5: one row per profile in the provider pane; v0.6.6 (this version): `claude-nexus` names its own resume command on exit; v0.6.7 (this version): Claude Mode, `/automodel-nexus`, the HUD mode badge.
+- **v0.6**: lean mode (terse replies, minimal code), `/lean-review-nexus`, `/compress-nexus`; v0.6.1: eight more skins, the `/mcp-nexus` switcher; v0.6.2: git counts in the HUD, the Agents panel; v0.6.3: the provider form picks models from the hub on an edit too; v0.6.4: model fallback on a hub, the badge follows `/model`; v0.6.5: one row per profile in the provider pane; v0.6.6 (this version): `claude-nexus` names its own resume command on exit; v0.6.7: Claude Mode, `/automodel-nexus`, the HUD mode badge; v0.6.8 (this version): Claude Mode is called Auto Model in the settings, the pane and the status.
 - **v0.7**: test-tamper guard, evidence check before "done", `/review-nexus`.
 - **v0.8**: hunk-level diff review, plan annotation in the browser.
 - Later: Telegram remote control, session search, worktree cockpit.

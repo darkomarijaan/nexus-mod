@@ -1,4 +1,4 @@
-// Nexus Claude Mode: an intelligent model router for the Claude route. Pure
+// Nexus Auto Model: an intelligent model router for the Claude route. Pure
 // logic, no Node APIs, so the router and its tests share exactly this code.
 //
 // For each main-thread request (one that carries tools) it decides a tier,
@@ -236,7 +236,7 @@ export function costOf(usage, price) {
 
 // ── The engine ───────────────────────────────────────────────────────────
 
-/** Claude Mode's state and decisions for one router. `now` is injectable for tests. */
+/** Auto Model's state and decisions for one router. `now` is injectable for tests. */
 export function createClaudeMode({ now = () => Date.now() } = {}) {
   const state = {
     mode: 'auto',

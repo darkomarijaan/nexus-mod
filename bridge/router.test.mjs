@@ -583,7 +583,7 @@ test('a request the hub refuses as such (400) is not tried on another model', as
   })
 })
 
-// ── Claude Mode ──────────────────────────────────────────────────────────
+// ── Auto Model ──────────────────────────────────────────────────────────
 const agent = (text, extra = {}) => {
   const base = inference()
 
