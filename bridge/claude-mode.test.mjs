@@ -187,3 +187,180 @@ test('a decision and its record carry the shape and the incoming model', () => {
   assert.equal(entry.incoming, 'claude-haiku-5-5')
   assert.deepEqual(entry.shape, decision.shape)
 })
+
+// ── Jev, the optional classifier ─────────────────────────────────────────
+// A message the rules score 1 (MEDIUM, inside the gray zone 0 to 4).
+const GRAY = 'Tambah fungsi untuk validasi email di utils.ts'
+const answer = (level, probability = 0.9, confidence = 0.9) => ({
+  ok: true,
+  status: 200,
+  body: { cancel: async () => {} },
+  json: async () => ({ answers: { tier: { type: 'choice', choice: level, confidence, probabilities: { [level]: probability } } }, usage: { input_tokens: 100, output_tokens: 10 } }),
+})
+const jevFail = status => ({ ok: false, status, body: { cancel: async () => {} }, json: async () => ({}) })
+const fakeFetch = (...replies) => {
+  const fn = async (url, init) => {
+    fn.calls.push({ url, init })
+    const next = replies.length > 1 ? replies.shift() : replies[0]
+    if (next instanceof Error) throw next
+
+    return next
+  }
+  fn.calls = []
+
+  return fn
+}
+const grayMode = (extra = {}, options = {}) => {
+  const mode = createClaudeMode(options)
+  assert.equal(mode.configure({ jev: { mode: 'gray', ...extra } }), null)
+
+  return mode
+}
+const decide = async (mode, text, options = {}) => {
+  const key = 'key' in options ? options.key : 'k-secret'
+  const body = ask(text)
+  const hint = await mode.consult(body, { key, fetch: options.fetch })
+
+  return mode.plan(body, { hint })
+}
+
+test('without Jev (off, no key, empty key) nothing is asked and the rules decide as before', async () => {
+  const fetch = fakeFetch(answer('HEAVY'))
+  const off = createClaudeMode()
+  assert.equal((await decide(off, GRAY, { fetch })).tier, 'sonnet')
+  assert.equal((await decide(grayMode(), GRAY, { fetch, key: undefined })).tier, 'sonnet')
+  assert.equal((await decide(grayMode(), GRAY, { fetch, key: '' })).tier, 'sonnet')
+  assert.equal(fetch.calls.length, 0)
+  assert.deepEqual((await decide(off, GRAY, { fetch })).reasons.filter(one => one.startsWith('jev')), [])
+})
+
+test('in the gray zone a confident answer sets the tier', async () => {
+  const fetch = fakeFetch(answer('HEAVY'))
+  const mode = grayMode()
+  const plan = await decide(mode, GRAY, { fetch })
+  assert.equal(plan.tier, 'opus')
+  assert.ok(plan.reasons.includes('jev:HEAVY@0.90'))
+  assert.equal(fetch.calls.length, 1)
+  assert.equal(fetch.calls[0].init.headers.authorization, 'Bearer k-secret')
+  const { jev } = mode.snapshot({ keyPresent: true })
+  assert.equal(jev.calls, 1)
+  assert.equal(jev.used, 1)
+  assert.equal(jev.tokensIn, 100)
+})
+
+test('clear cases are not asked', async () => {
+  const fetch = fakeFetch(answer('HEAVY'))
+  const mode = grayMode()
+  assert.equal((await decide(mode, 'apa itu closure?', { fetch })).tier, 'haiku')
+  assert.equal((await decide(mode, 'Rancang arsitektur microservice untuk sistem pembayaran dan bahas trade-off-nya', { fetch })).tier, 'opus')
+  assert.equal(fetch.calls.length, 0)
+})
+
+test('a turn is asked once, however many requests it makes', async () => {
+  const fetch = fakeFetch(answer('HEAVY'))
+  const mode = grayMode()
+  const body = ask(GRAY)
+  const hint = await mode.consult(body, { key: 'k', fetch })
+  mode.plan(body, { hint })
+  assert.equal(await mode.consult(body, { key: 'k', fetch }), null)
+  assert.equal(fetch.calls.length, 1)
+})
+
+test('a low-confidence answer leaves the decision to the rules', async () => {
+  const mode = grayMode()
+  const plan = await decide(mode, GRAY, { fetch: fakeFetch(answer('HEAVY', 0.5, 0.9)) })
+  assert.equal(plan.tier, 'sonnet')
+  assert.ok(plan.reasons.includes('jev-low-conf'))
+  const plan2 = await decide(mode, GRAY + ' lagi', { fetch: fakeFetch(answer('HEAVY', 0.9, 0.3)) })
+  assert.equal(plan2.tier, 'sonnet')
+  assert.equal(mode.snapshot().jev.lowConf, 2)
+})
+
+test('a failed ask leaves the decision to the rules and says why in the reason codes', async () => {
+  const mode = grayMode()
+  const http = await decide(mode, GRAY, { fetch: fakeFetch(jevFail(500)) })
+  assert.equal(http.tier, 'sonnet')
+  assert.ok(http.reasons.includes('jev-http'))
+  const late = await decide(mode, GRAY + ' b', { fetch: fakeFetch(Object.assign(new Error('t'), { name: 'TimeoutError' })) })
+  assert.ok(late.reasons.includes('jev-timeout'))
+  const odd = await decide(mode, GRAY + ' c', { fetch: fakeFetch({ ok: true, status: 200, json: async () => ({ nope: 1 }) }) })
+  assert.ok(odd.reasons.includes('jev-shape'))
+  const { jev } = mode.snapshot()
+  assert.equal(jev.timeouts, 1)
+  assert.equal(jev.errors, 2)
+})
+
+test('three failures in a row pause Jev for five minutes', async () => {
+  let at = 1_000_000
+  const mode = grayMode({}, { now: () => at })
+  const fetch = fakeFetch(jevFail(500))
+  for (const suffix of ['a', 'b', 'c']) await decide(mode, `${GRAY} ${suffix}`, { fetch })
+  assert.equal(fetch.calls.length, 3)
+  await decide(mode, `${GRAY} d`, { fetch })
+  assert.equal(fetch.calls.length, 3)
+  assert.equal(mode.snapshot().jev.paused, true)
+  at += 5 * 60_000 + 1
+  await decide(mode, `${GRAY} e`, { fetch })
+  assert.equal(fetch.calls.length, 4)
+})
+
+test('a rejected key turns Jev off until the settings are given again', async () => {
+  const mode = grayMode()
+  const fetch = fakeFetch(jevFail(401))
+  await decide(mode, GRAY, { fetch })
+  assert.equal(mode.snapshot().jev.authFailed, true)
+  await decide(mode, `${GRAY} b`, { fetch })
+  assert.equal(fetch.calls.length, 1)
+  mode.configure({ jev: { mode: 'gray' } })
+  await decide(mode, `${GRAY} c`, { fetch })
+  assert.equal(fetch.calls.length, 2)
+})
+
+test('a message that looks like a secret is never sent', async () => {
+  const fetch = fakeFetch(answer('HEAVY'))
+  const mode = grayMode()
+  const plan = await decide(mode, `${GRAY} sk-abcdefghijklmnop1234`, { fetch })
+  assert.equal(fetch.calls.length, 0)
+  assert.equal(plan.tier, 'sonnet')
+  assert.ok(plan.reasons.includes('jev-skip-secret'))
+  assert.equal(mode.snapshot().jev.skipped, 1)
+})
+
+test('a risky message never drops below medium on Jev\'s word', async () => {
+  const plan = await decide(grayMode(), 'Tambah fungsi untuk menghapus data di database', { fetch: fakeFetch(answer('LIGHT', 0.95, 0.95)) })
+  assert.equal(plan.level, 'MEDIUM')
+  assert.ok(plan.reasons.includes('risk-floor'))
+})
+
+test('manual and off modes never ask', async () => {
+  const fetch = fakeFetch(answer('HEAVY'))
+  const mode = grayMode()
+  mode.configure({ mode: 'opus' })
+  assert.equal(await mode.consult(ask(GRAY), { key: 'k', fetch }), null)
+  mode.configure({ mode: 'off' })
+  assert.equal(await mode.consult(ask(GRAY), { key: 'k', fetch }), null)
+  assert.equal(fetch.calls.length, 0)
+})
+
+test('Jev settings are checked, and a bad one changes nothing', () => {
+  const mode = createClaudeMode()
+  for (const bad of [{ mode: 'maybe' }, { url: 'http://example.com/x' }, { timeoutMs: 10 }, { timeoutMs: 99_999 }, { keyEnv: 'a b' }, { model: 'bad id; drop' }, { minConfidence: 2 }]) {
+    assert.match(mode.configure({ jev: bad }) ?? '', /jev/)
+  }
+  assert.equal(mode.snapshot().jev.mode, 'off')
+  assert.equal(mode.configure({ jev: { mode: 'gray', timeoutMs: 1200, minConfidence: 0.4 } }), null)
+  assert.equal(mode.snapshot().jev.mode, 'gray')
+  assert.equal(mode.jevKeyEnv(), 'CMD_API_KEY')
+})
+
+
+test('a router given no Jev settings still works, and the snapshot never holds a key', async () => {
+  const mode = createClaudeMode()
+  assert.equal(mode.configure({ mode: 'auto', models: {} }), null)
+  const snap = mode.snapshot({ keyPresent: true })
+  assert.equal(snap.jev.mode, 'off')
+  assert.equal(snap.jev.keyPresent, true)
+  const busy = grayMode()
+  await decide(busy, GRAY, { fetch: fakeFetch(answer('HEAVY')), key: 'k-secret' })
+  assert.ok(!JSON.stringify(busy.snapshot({ keyPresent: true })).includes('k-secret'))
+})

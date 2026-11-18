@@ -1,6 +1,6 @@
 {
   "name": "nexus",
-  "version": "0.6.10",
+  "version": "0.7.0",
   "author": {
     "name": "eko"
   },
@@ -207,6 +207,12 @@
     "autoModelSonnet": { "type": "string", "title": "Auto Model: Sonnet model id", "description": "Model id sent for the standard tier.", "default": "claude-sonnet-5-5" },
     "autoModelHaiku": { "type": "string", "title": "Auto Model: Haiku model id", "description": "Model id sent for the light tier.", "default": "claude-haiku-5-5" },
     "autoModelMaxEscalations": { "type": "number", "title": "Auto Model: max escalations per turn", "description": "How many tiers a turn may move up after measured failures (0 to 2).", "default": 2 },
+    "autoModelJev": { "type": "string", "title": "Auto Model: Jev classifier (optional)", "description": "Optional. gray: when the built-in rules are unsure, ask Jev (TypeSafe) to judge how much reasoning your message needs. Only the message you typed is sent, never tool output or files, and never one that looks like it holds a key. Needs an account and a key in the environment variable named below; without a key, or on any failure, the rules decide as usual. off (default): never used.", "options": ["off", "gray"], "default": "off" },
+    "autoModelJevUrl": { "type": "string", "title": "Auto Model: Jev address", "description": "https address of the service that takes the Jev request.", "default": "https://api.commandcode.ai/provider/v1/systemone" },
+    "autoModelJevKeyEnv": { "type": "string", "title": "Auto Model: Jev key variable", "description": "Name of the variable that holds the key, read by claude-nexus when it starts, from the shell or from a .env file (see the README). The key itself is never a setting.", "default": "CMD_API_KEY" },
+    "autoModelJevModel": { "type": "string", "title": "Auto Model: Jev model id", "description": "Model id sent to the service.", "default": "typesafe/jev-1.14.0" },
+    "autoModelJevTimeoutMs": { "type": "number", "title": "Auto Model: Jev timeout (ms)", "description": "How long to wait for Jev before the rules decide (200 to 5000).", "default": 1500 },
+    "autoModelJevMinConfidence": { "type": "number", "title": "Auto Model: Jev minimum confidence", "description": "Below this confidence (0 to 1), or below 0.6 probability for the chosen level, the rules decide.", "default": 0.5 },
     "autoModelPrices": { "type": "string", "title": "Auto Model: prices", "description": "USD per million tokens as in/out per tier, for the cost estimate. Check your own price list.", "default": "opus=15/75,sonnet=3/15,haiku=1/5" }
   }
 }

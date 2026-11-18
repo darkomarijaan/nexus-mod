@@ -642,3 +642,77 @@ test('claude mode: when every model fails the last error reaches Claude Code', a
   assert.equal(answer.status, 503)
   modelStatus = {}
 })
+
+// ── Auto Model with the optional classifier ─────────────────────────────
+const GRAY_TEXT = 'Tambah fungsi untuk validasi email di utils.ts'
+const jevReply = level => (req, res) => {
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ answers: { tier: { type: 'choice', choice: level, confidence: 0.9, probabilities: { [level]: 0.9 } } }, usage: { input_tokens: 5, output_tokens: 1 } }))
+}
+
+async function withJev(env, handler, run, settings = {}) {
+  seen.jev = []
+  const jev = await fake('jev', handler)
+  const main = router
+  router = await startRouter({ token: TOKEN, controlToken: CONTROL, anthropic: `http://127.0.0.1:${anthropic.address().port}`, env })
+  try {
+    const url = `http://127.0.0.1:${jev.address().port}/v1/systemone`
+    assert.equal((await setMode({ jev: { mode: 'gray', url, timeoutMs: 400, ...settings } })).status, 200)
+    anthropicMode = 'ok'
+    await run()
+  } finally {
+    await router.close()
+    router = main
+    jev.close()
+  }
+}
+
+test('with Jev, a confident answer picks the tier and only the typed message leaves', async () => {
+  await withJev({ CMD_API_KEY: 'k-secret' }, jevReply('HEAVY'), async () => {
+    await call(agent(GRAY_TEXT))
+    assert.equal(modelSent(), 'claude-opus-5-5')
+    assert.equal(seen.jev.length, 1)
+    assert.equal(seen.jev[0].headers.authorization, 'Bearer k-secret')
+    const sent = JSON.parse(seen.jev[0].body)
+    assert.equal(sent.state, GRAY_TEXT)
+    assert.deepEqual(Object.keys(sent).sort(), ['model', 'questions', 'state'])
+    assert.ok(!seen.anthropic.at(-1).body.includes('k-secret'))
+    const snap = JSON.parse((await control('/__nexus/mode')).text)
+    assert.equal(snap.jev.keyPresent, true)
+    assert.equal(snap.jev.used, 1)
+    assert.ok(!JSON.stringify(snap).includes('k-secret'))
+  })
+})
+
+test('with Jev on but no key, the rules decide and Jev is never called', async () => {
+  await withJev({}, jevReply('HEAVY'), async () => {
+    await call(agent(GRAY_TEXT))
+    assert.equal(modelSent(), 'claude-sonnet-5-5')
+    assert.equal(seen.jev.length, 0)
+    const snap = JSON.parse((await control('/__nexus/mode')).text)
+    assert.equal(snap.jev.keyPresent, false)
+    assert.equal(snap.jev.calls, 0)
+  })
+})
+
+test('with Jev, a service that never answers does not hold up the answer', async () => {
+  await withJev({ CMD_API_KEY: 'k' }, () => {}, async () => {
+    const started = Date.now()
+    const answer = await call(agent(GRAY_TEXT))
+    assert.equal(answer.status, 200)
+    assert.equal(modelSent(), 'claude-sonnet-5-5')
+    assert.ok(Date.now() - started < 3000)
+    const snap = JSON.parse((await control('/__nexus/mode')).text)
+    assert.equal(snap.jev.timeouts, 1)
+    assert.ok(snap.recent.at(-1).reasons.includes('jev-timeout'))
+  })
+})
+
+test('with Jev, a service that is down is the rules\' business', async () => {
+  await withJev({ CMD_API_KEY: 'k' }, jevReply('HEAVY'), async () => {
+    assert.equal((await setMode({ jev: { url: 'http://127.0.0.1:9/x' } })).status, 200)
+    const answer = await call(agent(GRAY_TEXT))
+    assert.equal(answer.status, 200)
+    assert.equal(modelSent(), 'claude-sonnet-5-5')
+  })
+})

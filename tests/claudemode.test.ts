@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { readConfig } from '../hooks/config'
-import { modeBadge, modePayload, modeRecentText, modeStatusText, parseModeArgs, readModePick, type ClaudeModeSnapshot } from '../hooks/claudemode'
+import { DEFAULT_JEV, modeBadge, modePayload, modeRecentText, modeStatusText, parseModeArgs, readModePick, type ClaudeModeSnapshot } from '../hooks/claudemode'
 
 describe('claude mode', () => {
   test('arguments', () => {
@@ -64,5 +64,49 @@ describe('claude mode', () => {
     expect(modeBadge({ ...snap, mode: 'opus' })).toBe('mode opus')
     expect(modeBadge({ ...snap, mode: 'off' })).toBeNull()
     expect(modeBadge(null)).toBeNull()
+  })
+})
+
+describe('auto model with the optional Jev classifier', () => {
+  const snapshot = (jev: ClaudeModeSnapshot['jev']): ClaudeModeSnapshot => ({
+    mode: 'auto',
+    models: { opus: 'o', sonnet: 's', haiku: 'h' },
+    totals: { requests: 0, fallbacks: 0, escalations: 0, tokensIn: 0, tokensOut: 0, cost: 0, baseline: 0, byTier: {} },
+    recent: [],
+    ...(jev === undefined ? {} : { jev }),
+  })
+  const live = { mode: 'gray', model: 'typesafe/jev-1.14.0', keyEnv: 'CMD_API_KEY', keyPresent: true, paused: false, authFailed: false, calls: 4, used: 3, lowConf: 1, timeouts: 0, errors: 0, skipped: 0, tokensIn: 1500, tokensOut: 160 }
+
+  test('it is off by default, and a plain setup sends the router nothing about it that matters', () => {
+    const cfg = readConfig({})
+    expect(cfg.autoJev).toEqual(DEFAULT_JEV)
+    expect(cfg.autoJev.mode).toBe('off')
+  })
+
+  test('settings are read, and a bad one falls back so the router never refuses the rest', () => {
+    const on = readConfig({ autoModelJev: 'GRAY', autoModelJevTimeoutMs: 900, autoModelJevMinConfidence: 0.7, autoModelJevModel: 'typesafe/jev-9' })
+    expect(on.autoJev).toMatchObject({ mode: 'gray', timeoutMs: 900, minConfidence: 0.7, model: 'typesafe/jev-9' })
+    const bad = readConfig({ autoModelJev: 'maybe', autoModelJevUrl: 'http://example.com/x', autoModelJevKeyEnv: 'a b', autoModelJevModel: 'bad id; drop', autoModelJevTimeoutMs: 10, autoModelJevMinConfidence: 5 })
+    expect(bad.autoJev).toEqual({ ...DEFAULT_JEV, timeoutMs: 200 })
+    expect(readConfig({ autoModelJevTimeoutMs: 99999 }).autoJev.timeoutMs).toBe(5000)
+    expect(readConfig({ autoModelJevUrl: 'https://user:pw@example.com/x' }).autoJev.url).toBe(DEFAULT_JEV.url)
+  })
+
+  test('the payload carries the Jev settings when given, and none for an older caller', () => {
+    const base = { mode: 'auto' as const, models: { opus: 'o', sonnet: 's', haiku: 'h' }, maxEscalations: 2, prices: '' }
+    expect(modePayload({ ...base, jev: DEFAULT_JEV }, null)).toMatchObject({ jev: DEFAULT_JEV })
+    expect('jev' in modePayload(base, null)).toBe(false)
+  })
+
+  test('with Jev off the status says nothing about it', () => {
+    expect(modeStatusText(snapshot({ ...live, mode: 'off' }))).not.toContain('Jev')
+    expect(modeStatusText(snapshot(undefined))).not.toContain('Jev')
+  })
+
+  test('with Jev on the status says what is happening, and why when it cannot help', () => {
+    expect(modeStatusText(snapshot(live))).toContain('Jev: typesafe/jev-1.14.0, gray zone only; asked 4, used 3, low confidence 1')
+    expect(modeStatusText(snapshot({ ...live, keyPresent: false }))).toContain('Jev: on, but no key in CMD_API_KEY; using the rules')
+    expect(modeStatusText(snapshot({ ...live, authFailed: true }))).toContain('the key was rejected')
+    expect(modeStatusText(snapshot({ ...live, paused: true }))).toContain('paused after repeated failures')
   })
 })

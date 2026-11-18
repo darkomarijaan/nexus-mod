@@ -128,3 +128,57 @@ test('the sh launcher finds the bridge when started through a symlink', { skip: 
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /base=http:\/\/127\.0\.0\.1:\d+/)
 })
+
+// ── .env files ──────────────────────────────────────────────────────────
+// A claude that reports whether the router can see the Jev key, and whether it was handed any .env variable itself.
+const probe = `const base = process.env.ANTHROPIC_BASE_URL
+const control = process.env.NEXUS_ROUTER_TOKEN
+const response = await fetch(base + '/__nexus/mode', { headers: { 'x-nexus-control': control } })
+const snap = await response.json()
+console.log(JSON.stringify({ keyPresent: snap.jev.keyPresent, keyEnv: snap.jev.keyEnv, childKey: process.env.CMD_API_KEY ?? null, childOther: process.env.PROJECT_SECRET ?? null }))
+process.exit(0)
+`
+
+function launchIn(project, home) {
+  const fake = join(mkdtempSync(join(tmpdir(), 'nexus-fake-')), 'fake-claude.mjs')
+  writeFileSync(fake, probe)
+  const env = { ...process.env, CLAUDE_NEXUS_CLAUDE: process.execPath, HOME: home, USERPROFILE: home }
+  delete env.CMD_API_KEY
+  delete env.NEXUS_ENV_FILE
+  const run = spawnSync(process.execPath, [launcher, fake], { env, cwd: project, encoding: 'utf8', timeout: 20_000 })
+  assert.equal(run.status, 0, run.stderr)
+
+  return JSON.parse(run.stdout.trim().split('\n').at(-1))
+}
+
+test('a .env in the folder it was started from gives the router the key, and gives claude nothing', () => {
+  const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
+  const home = mkdtempSync(join(tmpdir(), 'nexus-home-'))
+  writeFileSync(join(project, '.env'), 'CMD_API_KEY=from-project-file\nPROJECT_SECRET=db-password\n')
+  const out = launchIn(project, home)
+  assert.equal(out.keyPresent, true)
+  assert.equal(out.childKey, null)
+  assert.equal(out.childOther, null)
+})
+
+test('a .env under ~/.claude/nexus is read from any folder', () => {
+  const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
+  const home = mkdtempSync(join(tmpdir(), 'nexus-home-'))
+  mkdirSync(join(home, '.claude', 'nexus'), { recursive: true })
+  writeFileSync(join(home, '.claude', 'nexus', '.env'), 'CMD_API_KEY=from-home-file\n')
+  const out = launchIn(project, home)
+  assert.equal(out.keyPresent, true)
+  assert.equal(out.childKey, null)
+})
+
+test('with no .env anywhere the router has no key and nothing breaks', () => {
+  const out = launchIn(mkdtempSync(join(tmpdir(), 'nexus-proj-')), mkdtempSync(join(tmpdir(), 'nexus-home-')))
+  assert.equal(out.keyPresent, false)
+  assert.equal(out.keyEnv, 'CMD_API_KEY')
+})
+
+test('an empty key in a .env is no key', () => {
+  const project = mkdtempSync(join(tmpdir(), 'nexus-proj-'))
+  writeFileSync(join(project, '.env'), 'CMD_API_KEY=\n')
+  assert.equal(launchIn(project, mkdtempSync(join(tmpdir(), 'nexus-home-'))).keyPresent, false)
+})

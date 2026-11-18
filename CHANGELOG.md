@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 (2026-11-18)
+
+- **Optional Jev classifier for Auto Model (off by default):** with `autoModelJev` set to `gray`, when the built-in rules are unsure about a message, Auto Model asks [Jev](https://docs.typesafe.ai/introduction) (TypeSafe), through any service that takes the same request (by default Command Code), to judge it light, medium or heavy. Nothing depends on it: with the setting off, without a key, or on any failure (a timeout, an error, a rejected key, an unsure answer) the rules decide exactly as before. Only the message you typed is sent (cut to about 2,500 characters; never tool output, files, the system prompt or history), and never one that looks like it holds a key or token. One question per turn, `autoModelJevTimeoutMs` (1500) at most; three failures in a row pause it for five minutes. `/automodel-nexus` shows how it is doing and says so plainly when the key is missing.
+- **`.env` files for `claude-nexus`:** the key is read from the shell or from a `.env` file, looked for at `NEXUS_ENV_FILE`, in the folder `claude-nexus` was started from, and in `~/.claude/nexus/.env`. Values from a `.env` go to the router only; the `claude` process and its tools never receive them. The shell's own value wins, and an empty value is none.
+- **Settings:** `autoModelJev`, `autoModelJevUrl`, `autoModelJevKeyEnv`, `autoModelJevModel`, `autoModelJevTimeoutMs`, `autoModelJevMinConfidence`. The key itself is never a setting.
+
 ## 0.6.10 (2026-11-18)
 
 - **Auto Model records what a request looks like:** each routed request keeps counts and kinds only (messages, tools, output cap, what the last message is made of) and the model Claude Code asked for. `/automodel-nexus recent` shows them on a second line under each decision, so a person's turn can be told from a background call. Never prompt text.

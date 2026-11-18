@@ -13,6 +13,41 @@ export const isClaudeMode = (value: unknown): value is ClaudeModeName => typeof 
 /** The person's stored pick; anything but a known mode is no pick. */
 export const readModePick = (stored: unknown): ClaudeModeName | null => (isClaudeMode(stored) ? stored : null)
 
+/** The optional Jev classifier. Off unless the person turns it on; the key is never a setting, only the name of its variable. */
+export type JevSettings = { mode: 'off' | 'gray'; url: string; keyEnv: string; model: string; timeoutMs: number; minConfidence: number }
+
+export const DEFAULT_JEV: JevSettings = {
+  mode: 'off',
+  url: 'https://api.commandcode.ai/provider/v1/systemone',
+  keyEnv: 'CMD_API_KEY',
+  model: 'typesafe/jev-1.14.0',
+  timeoutMs: 1500,
+  minConfidence: 0.5,
+}
+
+// The router refuses a bad value and keeps nothing of that patch, so a bad setting must never reach it.
+const JEV_URL = /^(?:https:\/\/[^\s/@?#]+|http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?)(?:[/?#]\S*)?$/
+const JEV_KEY_ENV = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+const JEV_MODEL = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,99}$/
+
+export function readJev(raw: { mode?: unknown; url?: unknown; keyEnv?: unknown; model?: unknown; timeoutMs?: unknown; minConfidence?: unknown }): JevSettings {
+  const word = (value: unknown, fallback: string) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback)
+  const url = word(raw.url, DEFAULT_JEV.url)
+  const keyEnv = word(raw.keyEnv, DEFAULT_JEV.keyEnv)
+  const model = word(raw.model, DEFAULT_JEV.model)
+  const timeout = typeof raw.timeoutMs === 'number' && Number.isFinite(raw.timeoutMs) ? Math.floor(raw.timeoutMs) : DEFAULT_JEV.timeoutMs
+  const confidence = typeof raw.minConfidence === 'number' && raw.minConfidence >= 0 && raw.minConfidence <= 1 ? raw.minConfidence : DEFAULT_JEV.minConfidence
+
+  return {
+    mode: word(raw.mode, 'off').toLowerCase() === 'gray' ? 'gray' : 'off',
+    url: JEV_URL.test(url) ? url : DEFAULT_JEV.url,
+    keyEnv: JEV_KEY_ENV.test(keyEnv) ? keyEnv : DEFAULT_JEV.keyEnv,
+    model: JEV_MODEL.test(model) ? model : DEFAULT_JEV.model,
+    timeoutMs: Math.min(5000, Math.max(200, timeout)),
+    minConfidence: confidence,
+  }
+}
+
 export type ClaudeModeCommand = { kind: 'status' } | { kind: 'recent' } | { kind: 'set'; mode: ClaudeModeName } | { kind: 'reset' } | { kind: 'error'; message: string }
 
 export function parseModeArgs(args: string): ClaudeModeCommand {
@@ -30,6 +65,8 @@ export type ClaudeModeSettings = {
   models: { opus: string; sonnet: string; haiku: string }
   maxEscalations: number
   prices: string
+  /** Left out, the router keeps whatever Jev settings it has (an older caller). */
+  jev?: JevSettings
 }
 
 /** What the router is given: the person's pick beats the settings' mode. */
@@ -39,6 +76,7 @@ export function modePayload(settings: ClaudeModeSettings, pick: ClaudeModeName |
     models: settings.models,
     maxEscalations: Math.min(2, Math.max(0, Math.floor(settings.maxEscalations))),
     ...(settings.prices.trim() === '' ? {} : { prices: settings.prices.trim() }),
+    ...(settings.jev === undefined ? {} : { jev: settings.jev }),
   }
 }
 
@@ -62,6 +100,23 @@ export type ClaudeModeSnapshot = {
   models: Record<string, string>
   totals: { requests: number; fallbacks: number; escalations: number; tokensIn: number; tokensOut: number; cost: number; baseline: number; byTier: Record<string, number> }
   recent: Entry[]
+  /** Missing from an older router. */
+  jev?: {
+    mode: string
+    model: string
+    keyEnv: string
+    keyPresent: boolean
+    paused: boolean
+    authFailed: boolean
+    calls: number
+    used: number
+    lowConf: number
+    timeouts: number
+    errors: number
+    skipped: number
+    tokensIn: number
+    tokensOut: number
+  }
 }
 
 /** The tier a model id belongs to under the snapshot's model ids; null when it matches none. */
@@ -92,6 +147,14 @@ export function modeStatusText(snap: ClaudeModeSnapshot): string {
   ]
   if (totals.tokensIn + totals.tokensOut > 0) {
     lines.push(`  tokens in ${totals.tokensIn} out ${totals.tokensOut}; est. cost ${usd(totals.cost)} (${usd(totals.baseline)} on the session's own model)`)
+  }
+  const { jev } = snap
+  // With Jev off (the default) there is nothing to say about it.
+  if (jev !== undefined && jev.mode === 'gray') {
+    if (jev.authFailed) lines.push('  Jev: the key was rejected, using the rules (/automodel-nexus reset tries again)')
+    else if (!jev.keyPresent) lines.push(`  Jev: on, but no key in ${jev.keyEnv}; using the rules`)
+    else if (jev.paused) lines.push('  Jev: paused after repeated failures; using the rules for a few minutes')
+    else lines.push(`  Jev: ${jev.model}, gray zone only; asked ${jev.calls}, used ${jev.used}, low confidence ${jev.lowConf}, timeouts ${jev.timeouts}, errors ${jev.errors}, skipped ${jev.skipped}; tokens in ${jev.tokensIn} out ${jev.tokensOut}`)
   }
   lines.push('  /automodel-nexus auto | opus | sonnet | haiku | off | recent | reset')
 

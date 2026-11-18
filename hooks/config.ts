@@ -1,6 +1,6 @@
 import type { PluginOptions } from 'claude-code'
 
-import { isClaudeMode, type ClaudeModeName } from './claudemode'
+import { isClaudeMode, readJev, type ClaudeModeName, type JevSettings } from './claudemode'
 import { isLeanTalk, type LeanTalk } from './leanmode'
 import { DEFAULT_THEME, isTheme } from './theme'
 
@@ -41,6 +41,8 @@ export type NexusConfig = {
   autoModels: { opus: string; sonnet: string; haiku: string }
   autoModelMaxEscalations: number
   autoModelPrices: string
+  /** The optional Jev classifier: off unless turned on, and never needed. */
+  autoJev: JevSettings
 }
 
 const flag = (value: unknown, fallback: boolean) =>
@@ -101,5 +103,13 @@ export function readConfig(options: PluginOptions): NexusConfig {
     },
     autoModelMaxEscalations: Math.min(2, Math.floor(count(options.autoModelMaxEscalations, 2))),
     autoModelPrices: text(options.autoModelPrices, 'opus=15/75,sonnet=3/15,haiku=1/5').trim(),
+    autoJev: readJev({
+      mode: options.autoModelJev,
+      url: options.autoModelJevUrl,
+      keyEnv: options.autoModelJevKeyEnv,
+      model: options.autoModelJevModel,
+      timeoutMs: options.autoModelJevTimeoutMs,
+      minConfidence: options.autoModelJevMinConfidence,
+    }),
   }
 }

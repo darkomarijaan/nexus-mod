@@ -8,6 +8,8 @@
 // failures. It never reads or keeps prompt text beyond scoring it in memory:
 // the records it keeps hold reason codes, never text.
 
+import { DEFAULT_JEV, JEV_MIN_PROBABILITY, askJev, looksSecret, validJevUrl, validKeyEnv } from './jev.mjs'
+
 export const MODES = ['auto', 'off', 'opus', 'sonnet', 'haiku']
 export const TIERS = ['opus', 'sonnet', 'haiku']
 const UP = { haiku: 'sonnet', sonnet: 'opus' }
@@ -274,6 +276,9 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
     prices: { ...DEFAULT_PRICES },
     maxEscalations: 2,
     turn: null,
+    // The optional classifier. Off unless the settings turn it on; never needed.
+    jev: { ...DEFAULT_JEV },
+    jevStats: { calls: 0, used: 0, lowConf: 0, timeouts: 0, errors: 0, skipped: 0, tokensIn: 0, tokensOut: 0, failures: 0, pausedUntil: 0, authFailed: false },
     recent: [],
     totals: { requests: 0, fallbacks: 0, escalations: 0, tokensIn: 0, tokensOut: 0, cost: 0, baseline: 0, byTier: { opus: 0, sonnet: 0, haiku: 0 } },
   }
@@ -301,11 +306,43 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
       if (parsed === null) return 'prices must look like opus=15/75,sonnet=3/15,haiku=1/5'
       next.prices = { ...DEFAULT_PRICES, ...parsed }
     }
+    if (patch.jev !== undefined) {
+      const given = patch.jev
+      if (given === null || typeof given !== 'object') return 'jev settings must be an object'
+      const jev = { ...state.jev }
+      if (given.mode !== undefined) {
+        if (given.mode !== 'off' && given.mode !== 'gray') return 'jev mode must be off or gray'
+        jev.mode = given.mode
+      }
+      if (given.url !== undefined) {
+        if (typeof given.url !== 'string' || !validJevUrl(given.url)) return 'jev url must be an https address'
+        jev.url = given.url
+      }
+      if (given.keyEnv !== undefined) {
+        if (!validKeyEnv(given.keyEnv)) return 'jev keyEnv must be an environment variable name'
+        jev.keyEnv = given.keyEnv
+      }
+      if (given.model !== undefined) {
+        if (typeof given.model !== 'string' || !MODEL_ID.test(given.model.trim())) return 'the jev model id is not a plain model id'
+        jev.model = given.model.trim()
+      }
+      if (given.timeoutMs !== undefined) {
+        if (!Number.isInteger(given.timeoutMs) || given.timeoutMs < 200 || given.timeoutMs > 5000) return 'jev timeoutMs must be 200 to 5000'
+        jev.timeoutMs = given.timeoutMs
+      }
+      if (given.minConfidence !== undefined) {
+        if (typeof given.minConfidence !== 'number' || !(given.minConfidence >= 0 && given.minConfidence <= 1)) return 'jev minConfidence must be 0 to 1'
+        jev.minConfidence = given.minConfidence
+      }
+      next.jev = jev
+    }
     if (patch.maxEscalations !== undefined) {
       if (!Number.isInteger(patch.maxEscalations) || patch.maxEscalations < 0 || patch.maxEscalations > 2) return 'maxEscalations must be 0, 1 or 2'
       next.maxEscalations = patch.maxEscalations
     }
     Object.assign(state, next)
+    // Giving the Jev settings again is how a person retries after a rejected key or a pause.
+    if (next.jev !== undefined) Object.assign(state.jevStats, { authFailed: false, failures: 0, pausedUntil: 0 })
 
     return null
   }
@@ -314,7 +351,7 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
    * The plan for one request, or null to leave it alone (mode off, no tools: a helper call, or nothing to read).
    * { tier, model, chain, level, score, reasons, escalation }
    */
-  function plan(body, { bytes = 0 } = {}) {
+  function plan(body, { bytes = 0, hint = null } = {}) {
     if (state.mode === 'off' || body === null || typeof body !== 'object') return null
     if (!Array.isArray(body.tools) || body.tools.length === 0 || typeof body.model !== 'string') return null
     const turn = readTurn(body.messages)
@@ -331,7 +368,7 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
     } else {
       const kept = state.turn !== null && state.turn.key === turn.key ? state.turn : null
       if (kept === null) {
-        const found = classify(turn, { bytes })
+        const found = applyHint(classify(turn, { bytes }), hint)
         state.turn = { key: turn.key, tier: TIER_OF_LEVEL[found.level], level: found.level, score: found.score, reasons: found.reasons, escalations: 0 }
       } else if (kept.escalations < state.maxEscalations && UP[kept.tier] !== undefined) {
         const why = escalationReason(kept.tier, turn)
@@ -355,6 +392,82 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
     const chain = [...new Set([model, ...rest])].slice(0, 3)
 
     return { mode: state.mode, tier, model, incoming, chain, level, score, reasons: [...reasons], escalation, shape: shapeOf(body) }
+  }
+
+  let pending = null
+
+  /**
+   * Asks the optional classifier about a turn the rules left in the gray zone (score 0 to 4). Null, with no
+   * network call, whenever it is not wanted: setting off, no key, not auto mode, a turn already decided, a clear
+   * case, paused or rejected. Otherwise { ok: true, level, confidence, probability } or { ok: false, kind }.
+   * The key is used for the call and kept nowhere.
+   */
+  async function consult(body, { bytes = 0, key, fetch = globalThis.fetch } = {}) {
+    if (state.jev.mode !== 'gray' || state.mode !== 'auto') return null
+    if (typeof key !== 'string' || key === '' || typeof fetch !== 'function') return null
+    if (body === null || typeof body !== 'object' || !Array.isArray(body.tools) || body.tools.length === 0) return null
+    const turn = readTurn(body.messages)
+    if (turn === null) return null
+    if (state.turn !== null && state.turn.key === turn.key) return null
+    const { score } = classify(turn, { bytes })
+    if (score < 0 || score > 4) return null
+    const stats = state.jevStats
+    if (stats.authFailed || now() < stats.pausedUntil) return null
+    if (pending !== null && pending.key === turn.key) return pending.promise
+    if (looksSecret(turn.text)) {
+      stats.skipped += 1
+
+      return { ok: false, kind: 'secret' }
+    }
+    const { url, model, timeoutMs } = state.jev
+    stats.calls += 1
+    const promise = askJev({ fetch, url, key, model, text: turn.text, timeoutMs })
+      .then(result => {
+        if (result.ok) {
+          stats.failures = 0
+          stats.tokensIn += result.usage.input
+          stats.tokensOut += result.usage.output
+        } else if (result.kind === 'auth') {
+          stats.authFailed = true
+          stats.errors += 1
+        } else {
+          if (result.kind === 'timeout') stats.timeouts += 1
+          else stats.errors += 1
+          stats.failures += 1
+          if (stats.failures >= 3) {
+            stats.failures = 0
+            stats.pausedUntil = now() + 5 * 60_000
+          }
+        }
+
+        return result
+      })
+      .finally(() => {
+        if (pending !== null && pending.key === turn.key) pending = null
+      })
+    pending = { key: turn.key, promise }
+
+    return promise
+  }
+
+  /** The rules' decision, or Jev's where it answered confidently; a risky message never drops below MEDIUM on it. */
+  function applyHint(found, hint) {
+    if (hint === null || hint === undefined) return found
+    if (!hint.ok) return { ...found, reasons: [...found.reasons, hint.kind === 'secret' ? 'jev-skip-secret' : `jev-${hint.kind}`] }
+    if (hint.confidence < state.jev.minConfidence || hint.probability < JEV_MIN_PROBABILITY) {
+      state.jevStats.lowConf += 1
+
+      return { ...found, reasons: [...found.reasons, 'jev-low-conf'] }
+    }
+    state.jevStats.used += 1
+    let { level } = hint
+    const reasons = [...found.reasons, `jev:${level}@${hint.probability.toFixed(2)}`]
+    if (level === 'LIGHT' && found.reasons.includes('risk')) {
+      level = 'MEDIUM'
+      reasons.push('risk-floor')
+    }
+
+    return { ...found, level, reasons }
   }
 
   /** Files one answer into the history and totals; `usage` may be null, `fallbacks` lists the models that failed first. */
@@ -395,14 +508,31 @@ export function createClaudeMode({ now = () => Date.now() } = {}) {
     return entry
   }
 
-  const snapshot = () => ({
+  /** `keyPresent` is the router's word that the key variable is set; the key itself never comes here to be kept. */
+  const snapshot = ({ keyPresent = false } = {}) => ({
     mode: state.mode,
     models: { ...state.models },
     prices: state.prices,
     maxEscalations: state.maxEscalations,
     totals: { ...state.totals, byTier: { ...state.totals.byTier } },
     recent: state.recent.slice(),
+    jev: {
+      mode: state.jev.mode,
+      model: state.jev.model,
+      keyEnv: state.jev.keyEnv,
+      keyPresent: keyPresent === true,
+      paused: now() < state.jevStats.pausedUntil,
+      authFailed: state.jevStats.authFailed,
+      calls: state.jevStats.calls,
+      used: state.jevStats.used,
+      lowConf: state.jevStats.lowConf,
+      timeouts: state.jevStats.timeouts,
+      errors: state.jevStats.errors,
+      skipped: state.jevStats.skipped,
+      tokensIn: state.jevStats.tokensIn,
+      tokensOut: state.jevStats.tokensOut,
+    },
   })
 
-  return { configure, plan, record, snapshot }
+  return { configure, consult, plan, record, snapshot, jevKeyEnv: () => state.jev.keyEnv }
 }

@@ -8,6 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { constants as osConstants, homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
+import { envFileCandidates, loadEnvFiles, mergeEnv } from './env-file.mjs'
 import { startRouter } from './router.mjs'
 import { latestSession, resumeHint } from './resume.mjs'
 
@@ -21,7 +22,12 @@ const log = line => {
   if (logFile !== null) appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`)
 }
 
-const router = await startRouter({ token, controlToken, log, debug: logFile !== null })
+// Variables from .env files (the optional Jev key) go to the router only: the claude process below gets
+// process.env as it is, so a project's secrets in a .env never reach Claude's tools.
+const fromFiles = loadEnvFiles(envFileCandidates({ env: process.env, cwd: process.cwd(), home: homedir() }))
+if (fromFiles.files.length > 0) log(`env files read: ${fromFiles.files.join(', ')}`)
+
+const router = await startRouter({ token, controlToken, log, debug: logFile !== null, env: mergeEnv(fromFiles.vars, process.env) })
 
 for (const name of ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']) {
   if (process.env[name]) console.error(`claude-nexus: ${name} is set, so it, not your claude.ai login, reaches Anthropic on the Claude route.`)

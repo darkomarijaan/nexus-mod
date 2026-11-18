@@ -133,12 +133,20 @@ export async function startRouter({
   listenMs = 35_000,
   log = () => {},
   debug = false,
+  // Where Auto Model's optional classifier finds its key, and how it reaches the service (both injectable for tests).
+  env = process.env,
+  jevFetch = globalThis.fetch,
 }) {
   for (const secret of [token, controlToken]) {
     if (typeof secret !== 'string' || secret === '') throw new TypeError('startRouter needs a non-empty token and controlToken')
   }
 
   const mode = createClaudeMode()
+  const hasJevKey = () => {
+    const value = env[mode.jevKeyEnv()]
+
+    return typeof value === 'string' && value !== ''
+  }
   const state = { route: 'claude', profile: null, usedHub: false, counts: { claude: 0, hub: 0 } }
   const held = new Map()
   const events = []
@@ -238,7 +246,14 @@ export async function startRouter({
     let plan = null
     if (inference && parsed !== null) {
       try {
-        plan = mode.plan(parsed, { bytes: body.length })
+        // The optional classifier may be asked first. It is never needed and never fails the request.
+        let hint = null
+        try {
+          hint = await mode.consult(parsed, { bytes: body.length, key: env[mode.jevKeyEnv()], fetch: jevFetch })
+        } catch {
+          hint = null
+        }
+        plan = mode.plan(parsed, { bytes: body.length, hint })
       } catch {
         plan = null
       }
@@ -333,7 +348,7 @@ export async function startRouter({
         const problem = mode.configure(input)
         if (problem !== null) return json(res, 400, { error: problem })
       } else if (req.method !== 'GET') return json(res, 404, { error: 'not found' })
-      return json(res, 200, mode.snapshot())
+      return json(res, 200, mode.snapshot({ keyPresent: hasJevKey() }))
     }
     if (req.method === 'POST' && bare === '/__nexus/route') {
       if (input.route === 'claude') {

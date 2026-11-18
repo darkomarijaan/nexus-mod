@@ -1857,7 +1857,7 @@ const CLAUDE_MODE_KEY = 'claudeMode'
 /** Gives the router the settings and the person's stored pick (or a new pick). Null when there is no router or it refused. */
 async function pushClaudeMode($: Engine, cfg: NexusConfig, pick?: ReturnType<typeof readModePick>) {
   const chosen = pick === undefined ? readModePick(await $.store.get(CLAUDE_MODE_KEY).catch(() => null)) : pick
-  const answer = await routerCall($, 'POST', '/__nexus/mode', modePayload({ mode: cfg.autoModel, models: cfg.autoModels, maxEscalations: cfg.autoModelMaxEscalations, prices: cfg.autoModelPrices }, chosen))
+  const answer = await routerCall($, 'POST', '/__nexus/mode', modePayload({ mode: cfg.autoModel, models: cfg.autoModels, maxEscalations: cfg.autoModelMaxEscalations, prices: cfg.autoModelPrices, jev: cfg.autoJev }, chosen))
 
   return answer.ok ? (answer.data as unknown as ClaudeModeSnapshot) : { error: String(answer.data.error ?? answer.status) }
 }
@@ -2427,7 +2427,7 @@ function statusText(cfg: NexusConfig, theme: string, lean: LeanSettings, isLeanO
     `  Quota guard         ${cfg.quotaGuard === 0 ? 'off' : `at ${cfg.quotaGuard}%`}`,
     `  Turn footer         ${on(cfg.turnFooter)}`,
     `  Provider router     /provider-nexus  (sessions started with claude-nexus)`,
-    `  Auto Model         ${cfg.autoModel}  /automodel-nexus [auto|opus|sonnet|haiku|off|recent|reset]  (claude-nexus sessions)`,
+    `  Auto Model         ${cfg.autoModel}${cfg.autoJev.mode === 'gray' ? ' + Jev' : ''}  /automodel-nexus [auto|opus|sonnet|haiku|off|recent|reset]  (claude-nexus sessions)`,
     `  Context audit       /context-nexus   MCP servers per project: /mcp-nexus${mcpOff.length > 0 ? ` (off here: ${mcpOff.join(', ')})` : ''}`,
     `  Session handoff     ${on(cfg.handoff)}  /handoff-nexus`,
     `  Loop detector       ${on(cfg.loopGuard)}`,
